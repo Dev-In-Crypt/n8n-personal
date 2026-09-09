@@ -1,0 +1,225 @@
+{
+  "name": "[02] Dedup store on Supabase",
+  "nodes": [
+    {
+      "id": "b2000000-0000-4000-8000-000000000001",
+      "name": "When called by another workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000002",
+      "name": "Build keys",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Turns the incoming batch into stable dedup keys and builds the two Supabase REST\n// URLs the next nodes call. Config lives here so there is a single place to edit.\nconst SUPABASE_URL = '';        // TODO: https://<project>.supabase.co\nconst PREVIEW_LIMIT = 200;      // never store more of the payload than this\n\nconst input = $input.first().json || {};\nconst source = String(input.source || '').trim();\nconst keyField = String(input.key_field || '').trim();\nconst items = Array.isArray(input.items) ? input.items : [];\n\nif (!source) throw new Error('source is required');\nif (!keyField) throw new Error('key_field is required');\nif (!SUPABASE_URL) throw new Error('SUPABASE_URL is not configured in \"Build keys\"');\n\nconst enc = new TextEncoder();\nconst sha256 = async (s) => {\n  const buf = await crypto.subtle.digest('SHA-256', enc.encode(s));\n  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');\n};\n\nconst keys = [];\nfor (const item of items) {\n  const raw = item === null || item === undefined ? '' : item[keyField];\n  if (raw === undefined || raw === null || String(raw) === '') {\n    throw new Error('item is missing key_field \"' + keyField + '\": ' + JSON.stringify(item).slice(0, 120));\n  }\n  const value = String(raw);\n  keys.push({\n    hash: await sha256(source + ':' + value),\n    value,\n    item,\n    preview: JSON.stringify(item).slice(0, PREVIEW_LIMIT),\n  });\n}\n\n// Deduplicate inside the batch itself: the same key twice in one call is one item.\nconst seenInBatch = new Set();\nconst unique = keys.filter((k) => (seenInBatch.has(k.hash) ? false : seenInBatch.add(k.hash)));\nconst duplicatesInBatch = keys.length - unique.length;\n\nconst base = SUPABASE_URL.replace(/\\/+$/, '');\nconst hashList = unique.map((k) => '\"' + k.hash + '\"').join(',');\n\nreturn [{\n  json: {\n    source,\n    keyField,\n    total: items.length,\n    duplicatesInBatch,\n    keys: unique,\n    // PostgREST: hash=in.(\"a\",\"b\"). An empty batch must not produce in.() which is invalid.\n    selectUrl: base + '/rest/v1/seen_items?select=hash&hash=in.(' + (hashList || '\"__none__\"') + ')',\n    insertUrl: base + '/rest/v1/seen_items',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000003",
+      "name": "Fetch seen hashes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $json.selectUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000004",
+      "name": "Diff against seen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Subtracts the hashes the database already knows from the batch.\nconst built = $('Build keys').first().json;\nconst seen = new Set(\n  $input.all().map((i) => i.json && i.json.hash).filter((h) => typeof h === 'string')\n);\n\nconst fresh = built.keys.filter((k) => !seen.has(k.hash));\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    source: built.source,\n    hasNew: fresh.length > 0,\n    new_items: fresh.map((k) => k.item),\n    skipped: built.total - fresh.length,\n    duplicatesInBatch: built.duplicatesInBatch,\n    // One batch insert, never one call per item.\n    rows: fresh.map((k) => ({\n      hash: k.hash,\n      source: built.source,\n      first_seen_at: now,\n      payload_preview: k.preview,\n    })),\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000005",
+      "name": "Any new items?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d2000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.hasNew }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000006",
+      "name": "Insert new hashes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1120,
+        -110
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.insertUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rows) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000007",
+      "name": "Return result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Both branches converge here, so the caller always gets the same shape whether or\n// not an insert happened.\nconst d = $('Diff against seen').first().json;\nreturn [{\n  json: {\n    source: d.source,\n    new_items: d.new_items,\n    skipped: d.skipped,\n    duplicates_in_batch: d.duplicatesInBatch,\n  },\n}];\n"
+      }
+    }
+  ],
+  "connections": {
+    "When called by another workflow": {
+      "main": [
+        [
+          {
+            "node": "Build keys",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build keys": {
+      "main": [
+        [
+          {
+            "node": "Fetch seen hashes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch seen hashes": {
+      "main": [
+        [
+          {
+            "node": "Diff against seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Diff against seen": {
+      "main": [
+        [
+          {
+            "node": "Any new items?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any new items?": {
+      "main": [
+        [
+          {
+            "node": "Insert new hashes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert new hashes": {
+      "main": [
+        [
+          {
+            "node": "Return result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "active": false
+}

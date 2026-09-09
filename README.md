@@ -32,3 +32,4 @@ inactive and carry no credentials.
 | # | Workflow | What it is for |
 |---|---|---|
 | 01 | [Error handler with Telegram alert](workflows/01-error-handler) | one place that reports any failing workflow in the instance |
+| 02 | [Dedup store on Supabase](workflows/02-dedup-store) | returns only the items a source has never produced before |

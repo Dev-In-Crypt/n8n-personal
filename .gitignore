@@ -16,3 +16,4 @@ n8n_data/
 # Workflows are added one by one, once they are actually built and verified.
 workflows/*
 !workflows/01-error-handler
+!workflows/02-dedup-store

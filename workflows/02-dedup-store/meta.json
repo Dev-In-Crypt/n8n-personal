@@ -1,0 +1,19 @@
+{
+  "day": 2,
+  "slug": "dedup-store",
+  "category": "template",
+  "workflowName": "[02] Dedup store on Supabase",
+  "nodeVersions": {
+    "n8n-nodes-base.executeWorkflowTrigger": 1.2,
+    "n8n-nodes-base.code": 2,
+    "n8n-nodes-base.httpRequest": 4.4,
+    "n8n-nodes-base.if": 2.3
+  },
+  "builtAt": "2026-09-09",
+  "validated": {
+    "profile": "strict",
+    "errors": 0,
+    "warnings": 5
+  },
+  "active": false
+}

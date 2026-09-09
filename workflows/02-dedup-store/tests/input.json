@@ -1,0 +1,11 @@
+{
+  "source": "digest",
+  "key_field": "url",
+  "items": [
+    { "url": "https://example.com/a", "title": "Alpha" },
+    { "url": "https://example.com/b", "title": "Beta" },
+    { "url": "https://example.com/c", "title": "Gamma" },
+    { "url": "https://example.com/d", "title": "Delta" },
+    { "url": "https://example.com/e", "title": "Epsilon" }
+  ]
+}
