@@ -35,3 +35,4 @@ inactive and carry no credentials.
 | 02 | [Dedup store on Supabase](workflows/02-dedup-store) | returns only the items a source has never produced before |
 | 03 | [LLM call with schema and retries](workflows/03-llm-structured) | prompt plus JSON schema in, validated object out, format errors self-repaired |
 | 04 | [Human approval gate via Telegram](workflows/04-approval-gate) | suspends a workflow until a human approves or rejects, with an audit trail |
+| 05 | [Morning digest of sources](workflows/05-sources-digest) | one grouped Telegram digest a day, no repeats, silence when nothing is new |

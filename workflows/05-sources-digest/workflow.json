@@ -1,0 +1,359 @@
+{
+  "name": "[05] Morning digest of sources",
+  "nodes": [
+    {
+      "id": "e5000000-0000-4000-8000-000000000001",
+      "name": "Every morning at 07:30",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 7,
+              "triggerAtMinute": 30
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "e5000000-0000-4000-8000-00000000000c",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Single place to configure this workflow. Nothing here is a secret: the Supabase key\n// lives in the credential and the bot token lives in the Telegram credential.\nconst SUPABASE_URL = '';   // TODO: https://<project>.supabase.co\nconst CHAT_ID = '';        // TODO: id of the chat that receives the digest\n\nif (!SUPABASE_URL) throw new Error('SUPABASE_URL is not configured in \"Config\"');\nif (!CHAT_ID) throw new Error('CHAT_ID is not configured in \"Config\"');\n\nconst base = SUPABASE_URL.replace(/\\/+$/, '');\nreturn [{\n  json: {\n    chatId: CHAT_ID,\n    sourcesUrl: base + '/rest/v1/sources?select=url,title,category&enabled=eq.true',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "e5000000-0000-4000-8000-000000000002",
+      "name": "Load enabled sources",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $json.sourcesUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "e5000000-0000-4000-8000-000000000003",
+      "name": "Read feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.2,
+      "position": [
+        700,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {}
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": false
+    },
+    {
+      "id": "e5000000-0000-4000-8000-000000000004",
+      "name": "Normalise and cap",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Turns whatever the feeds returned into one dedup request for workflow 02.\n// Capping happens HERE, before deduplication, on purpose: workflow 02 records every\n// item it is given as seen, so anything capped after it would be silently lost\n// forever. Capping first means the overflow is simply picked up tomorrow.\nconst MAX_PER_RUN = 15;\n\nconst entries = $input.all().map((i) => i.json || {});\n\nconst normalised = entries.map((e) => {\n  const url = String(e.link || e.url || e.guid || '').trim();\n  const title = String(e.title || '').trim();\n  const published = e.isoDate || e.pubDate || e.published || null;\n  const excerpt = String(e.contentSnippet || e.summary || e.content || '')\n    .replace(/<[^>]*>/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .slice(0, 400);\n  return { url, title, published_at: published ? new Date(published).toISOString() : null, excerpt };\n}).filter((e) => e.url && e.title);\n\n// Newest first, so a capped run keeps the freshest items rather than an arbitrary slice.\nnormalised.sort((a, b) => {\n  const ta = a.published_at ? Date.parse(a.published_at) : 0;\n  const tb = b.published_at ? Date.parse(b.published_at) : 0;\n  return tb - ta;\n});\n\nconst capped = normalised.slice(0, MAX_PER_RUN);\n\nreturn [{\n  json: {\n    source: 'digest',\n    key_field: 'url',\n    items: capped,\n    fetched: normalised.length,\n    carriedOver: Math.max(0, normalised.length - capped.length),\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "e5000000-0000-4000-8000-000000000005",
+      "name": "Drop already seen",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1180,
+        0
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "aaq4oVxCOZbz0Ksc",
+          "mode": "list",
+          "cachedResultName": "[02] Dedup store on Supabase"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "e5000000-0000-4000-8000-000000000006",
+      "name": "Anything new?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1420,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f5000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.new_items.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e5000000-0000-4000-8000-000000000007",
+      "name": "Stay silent",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1660,
+        140
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "e5000000-0000-4000-8000-000000000008",
+      "name": "Build digest request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Builds one LLM request for the whole batch. One call, not one per item: cheaper,\n// and it lets the model tag consistently across the digest.\nconst dedup = $input.first().json || {};\nconst items = Array.isArray(dedup.new_items) ? dedup.new_items : [];\n\nconst list = items.map((it, n) => [\n  '[' + (n + 1) + '] ' + it.title,\n  'url: ' + it.url,\n  it.excerpt ? 'excerpt: ' + it.excerpt : null,\n].filter(Boolean).join('\\n')).join('\\n\\n');\n\nreturn [{\n  json: {\n    count: items.length,\n    items,\n    system: 'You summarise a feed digest for one busy reader. One line per entry, no retelling.',\n    user: 'Summarise each entry below. Keep one_liner under 120 characters and say what it is,'\n      + ' not that it exists. why_it_matters is one short clause or an empty string when there is'\n      + ' nothing to say. tag is a lowercase single word grouping similar entries.\\n\\n' + list,\n    max_retries: 2,\n    schema: {\n      type: 'object',\n      required: ['items'],\n      properties: {\n        items: {\n          type: 'array',\n          items: {\n            type: 'object',\n            required: ['url', 'one_liner', 'tag'],\n            properties: {\n              url: { type: 'string' },\n              one_liner: { type: 'string' },\n              why_it_matters: { type: 'string' },\n              tag: { type: 'string' },\n            },\n          },\n        },\n      },\n    },\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "e5000000-0000-4000-8000-000000000009",
+      "name": "Summarise batch",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1900,
+        -120
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SgxyRPkD8HkhXQAn",
+          "mode": "list",
+          "cachedResultName": "[03] LLM call with schema and retries"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "e5000000-0000-4000-8000-00000000000a",
+      "name": "Compose message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2140,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Builds the Telegram message. Grouped by tag, one line per entry, link on the title.\nconst llm = $input.first().json || {};\nconst batch = $('Build digest request').first().json;\n\nconst esc = (s) => String(s)\n  .replace(/&/g, '&amp;')\n  .replace(/</g, '&lt;')\n  .replace(/>/g, '&gt;');\n\n// If the model failed after its retries, fall back to titles rather than skipping the\n// digest: the reader still gets the links, just without the summaries.\nconst summarised = llm.ok && llm.data && Array.isArray(llm.data.items) ? llm.data.items : [];\nconst byUrl = new Map(summarised.map((s) => [s.url, s]));\n\nconst rows = batch.items.map((item) => {\n  const s = byUrl.get(item.url) || {};\n  return {\n    tag: String(s.tag || 'other').toLowerCase(),\n    title: item.title,\n    url: item.url,\n    one_liner: s.one_liner || '',\n    why: s.why_it_matters || '',\n  };\n});\n\nconst groups = new Map();\nfor (const row of rows) {\n  if (!groups.has(row.tag)) groups.set(row.tag, []);\n  groups.get(row.tag).push(row);\n}\n\nconst parts = ['<b>Morning digest</b>', ''];\nfor (const [tag, list] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {\n  parts.push('<b>' + esc(tag) + '</b>');\n  for (const row of list) {\n    const line = '• <a href=\"' + row.url + '\">' + esc(row.title) + '</a>';\n    parts.push(row.one_liner ? line + '\\n  ' + esc(row.one_liner) : line);\n    if (row.why) parts.push('  <i>' + esc(row.why) + '</i>');\n  }\n  parts.push('');\n}\n\nconst footer = [];\nif (batch.carriedOver > 0) footer.push(batch.carriedOver + ' more waiting for tomorrow');\nif (!llm.ok) footer.push('summaries unavailable, titles only');\nif (footer.length) parts.push('<i>' + esc(footer.join(' · ')) + '</i>');\n\nreturn [{\n  json: {\n    text: parts.join('\\n').trim(),\n    count: rows.length,\n    degraded: !llm.ok,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "e5000000-0000-4000-8000-00000000000b",
+      "name": "Send digest",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2380,
+        -120
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Config').first().json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every morning at 07:30": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load enabled sources": {
+      "main": [
+        [
+          {
+            "node": "Read feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read feed": {
+      "main": [
+        [
+          {
+            "node": "Normalise and cap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise and cap": {
+      "main": [
+        [
+          {
+            "node": "Drop already seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drop already seen": {
+      "main": [
+        [
+          {
+            "node": "Anything new?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything new?": {
+      "main": [
+        [
+          {
+            "node": "Build digest request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stay silent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build digest request": {
+      "main": [
+        [
+          {
+            "node": "Summarise batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarise batch": {
+      "main": [
+        [
+          {
+            "node": "Compose message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose message": {
+      "main": [
+        [
+          {
+            "node": "Send digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Load enabled sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "active": false
+}

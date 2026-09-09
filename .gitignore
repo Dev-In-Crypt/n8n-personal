@@ -19,3 +19,4 @@ workflows/*
 !workflows/02-dedup-store
 !workflows/03-llm-structured
 !workflows/04-approval-gate
+!workflows/05-sources-digest

@@ -1,0 +1,8 @@
+{
+  "feedEntries": [
+    { "title": "n8n 2.9 ships native MCP", "link": "https://example.com/n8n-29", "isoDate": "2026-09-08T10:00:00Z", "contentSnippet": "<p>The release adds an <b>MCP server</b> to core.</p>" },
+    { "title": "Postgres 19 beta", "link": "https://example.com/pg19", "isoDate": "2026-09-07T08:00:00Z", "contentSnippet": "Logical replication gets failover slots." },
+    { "title": "A & B <script> in the title", "link": "https://example.com/escape", "isoDate": "2026-09-09T06:00:00Z", "contentSnippet": "Escaping test." },
+    { "title": "No link here", "isoDate": "2026-09-09T05:00:00Z", "contentSnippet": "Should be dropped." }
+  ]
+}
