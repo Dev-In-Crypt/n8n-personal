@@ -1,0 +1,31 @@
+{
+  "profile": {
+    "id": "default",
+    "domains": ["ai", "automation"],
+    "keywords": ["artificial intelligence", "automation", "digital"],
+    "exclude_terms": ["nuclear"],
+    "countries": ["ES", "PT"],
+    "budget_min": 50000,
+    "budget_max": 2000000,
+    "notes": "Small team, no consortium."
+  },
+  "sources": [
+    { "name": "demo-api", "url": "https://example.org/calls.json", "kind": "json", "items_path": "data.calls",
+      "field_map": { "id": "ref", "title": "name", "url": "link", "deadline": "closes", "budget": "amount", "country": "cc", "summary": "abstract" } },
+    { "name": "other-api", "url": "https://example.org/other.json", "kind": "json", "items_path": "results",
+      "field_map": { "id": "id", "title": "title", "summary": "description" } }
+  ],
+  "fetched": [
+    { "data": { "calls": [
+      { "ref": "C-1", "name": "AI for public services", "link": "https://example.org/c1", "closes": "2027-03-01", "amount": "250000", "cc": "es", "abstract": "Grants for <b>artificial intelligence</b> in municipal services." },
+      { "ref": "C-2", "name": "Nuclear safety programme", "link": "https://example.org/c2", "closes": "2027-04-01", "amount": "900000", "cc": "ES", "abstract": "Automation for nuclear plant monitoring." },
+      { "ref": "C-3", "name": "Digital skills pilot", "link": "https://example.org/c3", "closes": "2020-01-01", "amount": "120000", "cc": "ES", "abstract": "Digital training pilots." },
+      { "ref": "C-4", "name": "Automation micro grant", "link": "https://example.org/c4", "closes": "2027-05-01", "amount": "1000", "cc": "ES", "abstract": "Small automation grants." },
+      { "ref": "C-5", "name": "Automation in Finland", "link": "https://example.org/c5", "closes": "2027-05-01", "amount": "300000", "cc": "FI", "abstract": "Automation projects, Finland only." },
+      { "ref": "C-6", "name": "Fisheries modernisation", "link": "https://example.org/c6", "closes": "2027-06-01", "amount": "400000", "cc": "ES", "abstract": "Boat engine replacement scheme." }
+    ] } },
+    { "results": [
+      { "id": "O-1", "title": "Digital twins for industry", "description": "Support for digital twin adoption." }
+    ] }
+  ]
+}

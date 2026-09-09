@@ -21,3 +21,4 @@ workflows/*
 !workflows/04-approval-gate
 !workflows/05-sources-digest
 !workflows/06-appstore-reviews
+!workflows/07-eu-funding-radar

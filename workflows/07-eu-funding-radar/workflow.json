@@ -1,0 +1,524 @@
+{
+  "name": "[07] EU Funding Radar",
+  "nodes": [
+    {
+      "id": "a7000000-0000-4000-8000-000000000001",
+      "name": "Every day at 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000002",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The only place to configure this workflow. The applicant profile deliberately does\n// NOT live here: it is a row in the database, so the same workflow serves any applicant.\nconst SUPABASE_URL = '';   // TODO: https://<project>.supabase.co\nconst CHAT_ID = '';        // TODO: chat that receives the alerts\nconst PROFILE_ID = 'default';\nconst ALERT_THRESHOLD = 70;\n\nif (!SUPABASE_URL) throw new Error('SUPABASE_URL is not configured in \"Config\"');\nif (!CHAT_ID) throw new Error('CHAT_ID is not configured in \"Config\"');\n\nconst base = SUPABASE_URL.replace(/\\/+$/, '');\nreturn [{\n  json: {\n    chatId: CHAT_ID,\n    alertThreshold: ALERT_THRESHOLD,\n    profileUrl: base + '/rest/v1/applicant_profile?id=eq.' + PROFILE_ID + '&limit=1',\n    // Only JSON sources are implemented, see the README. The filter keeps an\n    // unimplemented row from silently producing empty results.\n    sourcesUrl: base + '/rest/v1/funding_sources?enabled=eq.true&kind=eq.json',\n    storeUrl: base + '/rest/v1/funding_items',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000003",
+      "name": "Load applicant profile",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $json.profileUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000004",
+      "name": "Load sources",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        700,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.sourcesUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000005",
+      "name": "Fetch source",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        940,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000006",
+      "name": "Normalise items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Maps every source into one shape. Sources are rows, not code: each carries a dot path\n// to its item array and a map from our field names to theirs, so adding a source is an\n// insert rather than an edit here.\n//\n// \"Fetch source\" runs once per source row, so the fetched responses line up with\n// $('Load sources') by position. That positional pairing is why a failed fetch must\n// still emit an item, which is what onError: continueRegularOutput guarantees.\n// An empty or missing path must mean \"not mapped\", not \"the whole object\": reduce over\n// an empty key list would otherwise return obj itself and every unmapped field would\n// become \"[object Object]\" instead of falling back to the default.\nconst get = (obj, path) => {\n  const keys = String(path || '').split('.').filter(Boolean);\n  if (!keys.length) return undefined;\n  return keys.reduce((acc, key) => (acc === null || acc === undefined ? undefined : acc[key]), obj);\n};\n\nconst label = (x) => (x && typeof x === 'object' && 'label' in x ? x.label : x);\nconst text = (x) => (x === null || x === undefined ? '' : String(label(x)));\n\nconst parseMoney = (x) => {\n  const n = parseFloat(text(x).replace(/[^0-9.]/g, ''));\n  return Number.isFinite(n) ? n : null;\n};\nconst parseDate = (x) => {\n  const t = Date.parse(text(x));\n  return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : null;\n};\n\nconst sources = $('Load sources').all().map((i) => i.json);\nconst fetched = $input.all();\n\nconst items = [];\nfor (let idx = 0; idx < fetched.length; idx++) {\n  const json = fetched[idx].json || {};\n  const source = sources[idx];\n  if (!source) continue;\n\n  const rawList = get(json, source.items_path) || json.results || json.items || [];\n  const list = Array.isArray(rawList) ? rawList : [rawList];\n  const map = source.field_map || {};\n\n  for (const raw of list) {\n    if (!raw || typeof raw !== 'object') continue;\n    const nativeId = text(get(raw, map.id) ?? raw.id ?? raw.guid ?? get(raw, map.url) ?? raw.link);\n    const title = text(get(raw, map.title) ?? raw.title).trim();\n    if (!nativeId || !title) continue;\n\n    // The text is kept because quote verification later needs the exact string the\n    // model was shown, not a re-fetch that may have changed.\n    const summary = text(get(raw, map.summary) ?? raw.summary ?? raw.description ?? '')\n      .replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim();\n\n    items.push({\n      id: source.name + ':' + nativeId,\n      source: source.name,\n      title,\n      url: text(get(raw, map.url) ?? raw.url ?? raw.link) || null,\n      deadline: parseDate(get(raw, map.deadline) ?? raw.deadline),\n      budget: parseMoney(get(raw, map.budget) ?? raw.budget),\n      country: (text(get(raw, map.country) ?? raw.country) || '').toUpperCase() || null,\n      summary: summary.slice(0, 4000),\n    });\n  }\n}\n\nconst cfg = $('Config').first().json;\nreturn [{\n  json: {\n    source: 'eu-funding',\n    key_field: 'id',\n    items,\n    fetched: items.length,\n    chatId: cfg.chatId,\n    alertThreshold: cfg.alertThreshold,\n    storeUrl: cfg.storeUrl,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000007",
+      "name": "Drop already seen",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1420,
+        0
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "aaq4oVxCOZbz0Ksc",
+          "mode": "list",
+          "cachedResultName": "[02] Dedup store on Supabase"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000008",
+      "name": "Hard filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The cheap gate. Everything decidable in code is decided here, before a single token\n// is spent: deadlines, budget, country, required and disqualifying terms. The counters\n// it emits are what make \"most candidates never reach the model\" checkable rather than\n// a claim.\nconst dedup = $input.first().json || {};\nconst state = $('Normalise items').first().json;\nconst profile = $('Load applicant profile').first().json || {};\n\nconst arr = (x) => (Array.isArray(x) ? x : []);\nconst keywords = arr(profile.keywords).map((k) => String(k).toLowerCase());\nconst exclude = arr(profile.exclude_terms).map((k) => String(k).toLowerCase());\nconst countries = arr(profile.countries).map((c) => String(c).toUpperCase());\nconst budgetMin = profile.budget_min === null || profile.budget_min === undefined ? null : Number(profile.budget_min);\nconst budgetMax = profile.budget_max === null || profile.budget_max === undefined ? null : Number(profile.budget_max);\n\nconst today = new Date().toISOString().slice(0, 10);\nconst candidates = Array.isArray(dedup.new_items) ? dedup.new_items : [];\n\nconst dropped = { deadline: 0, budget: 0, country: 0, keywords: 0, excluded: 0 };\nconst kept = [];\n\nfor (const item of candidates) {\n  const haystack = (item.title + ' ' + item.summary).toLowerCase();\n\n  if (item.deadline && item.deadline < today) { dropped.deadline++; continue; }\n  if (budgetMin !== null && item.budget !== null && item.budget < budgetMin) { dropped.budget++; continue; }\n  if (budgetMax !== null && item.budget !== null && item.budget > budgetMax) { dropped.budget++; continue; }\n  if (countries.length && item.country && !countries.includes(item.country)) { dropped.country++; continue; }\n  if (exclude.length && exclude.some((t) => haystack.includes(t))) { dropped.excluded++; continue; }\n  if (keywords.length && !keywords.some((k) => haystack.includes(k))) { dropped.keywords++; continue; }\n\n  kept.push(item);\n}\n\nreturn [{\n  json: {\n    items: kept,\n    considered: candidates.length,\n    kept: kept.length,\n    dropped,\n    droppedTotal: candidates.length - kept.length,\n    profile: {\n      domains: arr(profile.domains),\n      keywords: arr(profile.keywords),\n      countries,\n      budget_min: budgetMin,\n      budget_max: budgetMax,\n      notes: profile.notes || '',\n    },\n    chatId: state.chatId,\n    alertThreshold: state.alertThreshold,\n    storeUrl: state.storeUrl,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000009",
+      "name": "Anything left to score?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1900,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b7000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.kept }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a7000000-0000-4000-8000-00000000000a",
+      "name": "Nothing to score",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2140,
+        140
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "a7000000-0000-4000-8000-00000000000b",
+      "name": "Build scoring request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2140,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// One scoring call for everything that survived the cheap gate.\nconst gate = $input.first().json;\nconst items = gate.items;\n\nconst list = items.map((it) => [\n  'id: ' + it.id,\n  'title: ' + it.title,\n  it.deadline ? 'deadline: ' + it.deadline : null,\n  it.budget !== null ? 'budget: ' + it.budget : null,\n  it.country ? 'country: ' + it.country : null,\n  'url: ' + (it.url || 'none'),\n  'text: ' + it.summary,\n].filter(Boolean).join('\\n')).join('\\n\\n---\\n\\n');\n\nconst p = gate.profile;\nconst profileText = [\n  'domains: ' + p.domains.join(', '),\n  'keywords: ' + p.keywords.join(', '),\n  'countries: ' + (p.countries.length ? p.countries.join(', ') : 'any'),\n  'budget range: ' + (p.budget_min ?? 'any') + ' to ' + (p.budget_max ?? 'any'),\n  p.notes ? 'notes: ' + p.notes : null,\n].filter(Boolean).join('\\n');\n\nreturn [{\n  json: {\n    ...gate,\n    system: 'You score European funding calls against one applicant profile. You never'\n      + ' invent evidence: evidence_quote must be copied verbatim from the text you were'\n      + ' given, and it is checked afterwards.',\n    user: 'Applicant profile:\\n' + profileText\n      + '\\n\\nScore each call below. evidence_quote must be an exact substring of that'\n      + \" call's own text. If you cannot find supporting text, return an empty\"\n      + ' evidence_quote and a low score.\\n\\n' + list,\n    max_retries: 2,\n    schema: {\n      type: 'object',\n      required: ['items'],\n      properties: {\n        items: {\n          type: 'array',\n          items: {\n            type: 'object',\n            required: ['id', 'relevance_0_100', 'evidence_quote'],\n            properties: {\n              id: { type: 'string' },\n              relevance_0_100: { type: 'integer' },\n              matched_criteria: { type: 'array', items: { type: 'string' } },\n              blocking_reasons: { type: 'array', items: { type: 'string' } },\n              evidence_quote: { type: 'string' },\n              evidence_url: { type: 'string' },\n            },\n          },\n        },\n      },\n    },\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a7000000-0000-4000-8000-00000000000c",
+      "name": "Score calls",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2380,
+        -120
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SgxyRPkD8HkhXQAn",
+          "mode": "list",
+          "cachedResultName": "[03] LLM call with schema and retries"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "a7000000-0000-4000-8000-00000000000d",
+      "name": "Verify evidence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2620,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Quote verification. This is the part that makes the scores worth anything: a quote\n// the model produced must be a literal substring of the text that model was given.\n// Anything else is marked unverified and capped, never silently trusted.\nconst UNVERIFIED_CAP = 40;\n\nconst llm = $input.first().json || {};\nconst gate = $('Build scoring request').first().json;\n\nconst scored = llm.ok && llm.data && Array.isArray(llm.data.items) ? llm.data.items : [];\nconst byId = new Map(scored.map((s) => [s.id, s]));\n\n// Whitespace differs harmlessly between the prompt and the source text; nothing else is\n// normalised, so a paraphrase still fails.\nconst norm = (s) => String(s || '').replace(/\\s+/g, ' ').trim().toLowerCase();\n\nlet unverifiedCount = 0;\nconst rows = gate.items.map((item) => {\n  const s = byId.get(item.id) || {};\n  const quote = String(s.evidence_quote || '').trim();\n  const haystack = norm(item.title + ' ' + item.summary);\n  const verified = quote.length >= 12 && haystack.includes(norm(quote));\n  if (!verified) unverifiedCount++;\n\n  const raw = Number.isInteger(s.relevance_0_100) ? s.relevance_0_100 : 0;\n  const relevance = verified ? Math.max(0, Math.min(100, raw)) : Math.min(raw, UNVERIFIED_CAP);\n\n  return {\n    id: item.id,\n    source: item.source,\n    title: item.title,\n    url: item.url,\n    deadline: item.deadline,\n    budget: item.budget,\n    country: item.country,\n    summary: item.summary.slice(0, 1000),\n    relevance,\n    matched: Array.isArray(s.matched_criteria) ? s.matched_criteria : [],\n    blocking: Array.isArray(s.blocking_reasons) ? s.blocking_reasons : [],\n    evidence: verified ? quote : null,\n    evidence_url: s.evidence_url || item.url || null,\n    unverified: !verified,\n    alerted: false,\n  };\n});\n\nconst alerts = rows.filter((r) => r.relevance >= gate.alertThreshold && !r.unverified);\nfor (const a of alerts) a.alerted = true;\nrows.sort((a, b) => b.relevance - a.relevance);\n\nconst esc = (s) => String(s)\n  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst parts = alerts.length ? ['<b>Funding radar: ' + alerts.length + ' worth a look</b>', ''] : [];\nfor (const a of alerts.slice().sort((x, y) => y.relevance - x.relevance)) {\n  parts.push('<b>' + a.relevance + '</b> · ' + esc(a.source)\n    + (a.deadline ? ' · deadline ' + esc(a.deadline) : ''));\n  parts.push(a.url ? '<a href=\"' + a.url + '\">' + esc(a.title) + '</a>' : esc(a.title));\n  if (a.matched.length) parts.push('matches: ' + esc(a.matched.slice(0, 3).join(', ')));\n  if (a.evidence) parts.push('<i>' + esc(a.evidence.slice(0, 200)) + '</i>');\n  parts.push('');\n}\nif (alerts.length) {\n  parts.push('<i>' + gate.considered + ' seen, ' + gate.droppedTotal + ' filtered before scoring'\n    + (unverifiedCount ? ', ' + unverifiedCount + ' unverified' : '') + '</i>');\n}\n\nreturn [{\n  json: {\n    rows,\n    stored: rows.length,\n    alertCount: alerts.length,\n    unverifiedCount,\n    considered: gate.considered,\n    droppedTotal: gate.droppedTotal,\n    dropped: gate.dropped,\n    degraded: !llm.ok,\n    chatId: gate.chatId,\n    storeUrl: gate.storeUrl,\n    text: parts.join('\\n').trim(),\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a7000000-0000-4000-8000-00000000000e",
+      "name": "Store items",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2860,
+        -120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.storeUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rows) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "a7000000-0000-4000-8000-00000000000f",
+      "name": "Anything to alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3100,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b7000000-0000-4000-8000-000000000002",
+              "leftValue": "={{ $('Verify evidence').first().json.alertCount }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000010",
+      "name": "Send alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3340,
+        -220
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Verify evidence').first().json.chatId }}",
+        "text": "={{ $('Verify evidence').first().json.text }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      }
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000011",
+      "name": "Stored, no alert",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3340,
+        -20
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Every day at 08:00": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Load applicant profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load applicant profile": {
+      "main": [
+        [
+          {
+            "node": "Load sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load sources": {
+      "main": [
+        [
+          {
+            "node": "Fetch source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch source": {
+      "main": [
+        [
+          {
+            "node": "Normalise items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise items": {
+      "main": [
+        [
+          {
+            "node": "Drop already seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drop already seen": {
+      "main": [
+        [
+          {
+            "node": "Hard filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hard filter": {
+      "main": [
+        [
+          {
+            "node": "Anything left to score?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything left to score?": {
+      "main": [
+        [
+          {
+            "node": "Build scoring request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing to score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build scoring request": {
+      "main": [
+        [
+          {
+            "node": "Score calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score calls": {
+      "main": [
+        [
+          {
+            "node": "Verify evidence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify evidence": {
+      "main": [
+        [
+          {
+            "node": "Store items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store items": {
+      "main": [
+        [
+          {
+            "node": "Anything to alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything to alert?": {
+      "main": [
+        [
+          {
+            "node": "Send alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stored, no alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "active": false
+}
