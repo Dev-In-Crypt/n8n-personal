@@ -1,0 +1,25 @@
+{
+  "brand": {
+    "id": "lunela", "name": "Lunela", "domain": "lunela.app",
+    "aliases": ["Lunela app"],
+    "competitors": [
+      { "name": "Moonlit", "domain": "moonlit.io", "aliases": [] },
+      { "name": "Sleepy Tales", "domain": "sleepytales.com", "aliases": ["SleepyTales"] }
+    ],
+    "enabled": true
+  },
+  "prompts": [
+    { "id": "p1", "brand_id": "lunela", "text": "best bedtime story apps for toddlers", "intent": "informational" },
+    { "id": "p2", "brand_id": "lunela", "text": "app that generates personalised bedtime stories", "intent": "informational" },
+    { "id": "p3", "brand_id": "lunela", "text": "Moonlit vs alternatives", "intent": "comparison" },
+    { "id": "p4", "brand_id": "lunela", "text": "where to download bedtime stories offline", "intent": "transactional" },
+    { "id": "p5", "brand_id": "lunela", "text": "story apps with no ads", "intent": "informational" }
+  ],
+  "answers": [
+    { "content": [{ "type": "text", "text": "Popular picks include Moonlit, then Lunela, and Sleepy Tales for older kids." }] },
+    { "content": [{ "type": "text", "text": "The Lunela app builds a story around your child's name. See lunela.app for details." }] },
+    { "content": [{ "type": "text", "text": "Moonlit is strong on narration. SleepyTales has a bigger catalogue." }] },
+    { "content": [{ "type": "text", "text": "Lunelabs and Lune are unrelated products; try downloading from a library app." }] },
+    { "error": { "type": "overloaded_error", "message": "server busy" } }
+  ]
+}

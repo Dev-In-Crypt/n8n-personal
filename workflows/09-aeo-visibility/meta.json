@@ -1,0 +1,26 @@
+{
+  "day": 9,
+  "slug": "aeo-visibility",
+  "category": "product",
+  "workflowName": "[09] AI search visibility monitor",
+  "calls": {},
+  "nodeVersions": {
+    "n8n-nodes-base.scheduleTrigger": 1.3,
+    "n8n-nodes-base.code": 2,
+    "n8n-nodes-base.httpRequest": 4.4,
+    "n8n-nodes-base.telegram": 1.2
+  },
+  "builtAt": "2026-09-09",
+  "validated": {
+    "profile": "strict",
+    "errors": 0,
+    "warnings": 11
+  },
+  "codeHashes": {
+    "Config": "5bdcf88a8b60",
+    "Build measurement requests": "97fb21505c24",
+    "Detect mentions": "2bfa246b8245",
+    "Compare and report": "299187cf7bf0"
+  },
+  "active": false
+}

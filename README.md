@@ -39,3 +39,4 @@ inactive and carry no credentials.
 | 06 | [App Store review monitor](workflows/06-appstore-reviews) | polls review feeds, tags them, alerts only on low ratings and bug reports |
 | 07 | [EU Funding Radar](workflows/07-eu-funding-radar) | scores European funding calls against a profile, with verified quotes only |
 | 08 | [Changelog to post drafts](workflows/08-changelog-to-posts) | turns releases into post drafts behind a human gate, never publishes |
+| 09 | [AI search visibility monitor](workflows/09-aeo-visibility) | weekly measure of whether a brand appears in model answers, with a delta |

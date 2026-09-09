@@ -1,0 +1,348 @@
+{
+  "name": "[09] AI search visibility monitor",
+  "nodes": [
+    {
+      "id": "a9000000-0000-4000-8000-000000000001",
+      "name": "Every Monday at 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "weeksInterval": 1,
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 9,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a9000000-0000-4000-8000-000000000002",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The only place to configure this workflow.\nconst SUPABASE_URL = '';                 // TODO: https://<project>.supabase.co\nconst CHAT_ID = '';                      // TODO: chat that receives the weekly report\nconst MODEL = 'claude-sonnet-4-5';       // the model whose answers are being measured\nconst MAX_TOKENS = 700;\n\nif (!SUPABASE_URL) throw new Error('SUPABASE_URL is not configured in \"Config\"');\nif (!CHAT_ID) throw new Error('CHAT_ID is not configured in \"Config\"');\n\nconst base = SUPABASE_URL.replace(/\\/+$/, '');\nconst runDate = new Date().toISOString().slice(0, 10);\n\nreturn [{\n  json: {\n    chatId: CHAT_ID,\n    model: MODEL,\n    maxTokens: MAX_TOKENS,\n    runDate,\n    brandsUrl: base + '/rest/v1/brands?enabled=eq.true',\n    promptsUrl: base + '/rest/v1/prompts?enabled=eq.true',\n    runsUrl: base + '/rest/v1/visibility_runs',\n    // Everything measured before today, newest first: the previous run is whatever the\n    // latest earlier run_date happens to be, so a skipped week still compares correctly.\n    historyUrl: base + '/rest/v1/visibility_runs?run_date=lt.' + runDate\n      + '&select=run_date,brand_id,prompt_id,mentioned,position,cited,model'\n      + '&order=run_date.desc&limit=2000',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a9000000-0000-4000-8000-000000000003",
+      "name": "Load brands",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $json.brandsUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "a9000000-0000-4000-8000-000000000004",
+      "name": "Load prompts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        700,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.promptsUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "a9000000-0000-4000-8000-000000000005",
+      "name": "Build measurement requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// One request per prompt. The prompt is asked as a user would ask it: no schema, no\n// JSON instruction, nothing that would change the answer being measured.\nconst cfg = $('Config').first().json;\nconst brands = $('Load brands').all().map((i) => i.json);\nconst prompts = $input.all().map((i) => i.json);\n\nconst byId = new Map(brands.map((b) => [b.id, b]));\n\nconst requests = [];\nfor (const p of prompts) {\n  const brand = byId.get(p.brand_id);\n  if (!brand) continue;\n  requests.push({\n    promptId: p.id,\n    brandId: brand.id,\n    intent: p.intent || 'informational',\n    promptText: p.text,\n    brand: { name: brand.name, domain: brand.domain || null, aliases: Array.isArray(brand.aliases) ? brand.aliases : [] },\n    competitors: Array.isArray(brand.competitors) ? brand.competitors : [],\n    model: cfg.model,\n    runDate: cfg.runDate,\n    url: 'https://api.anthropic.com/v1/messages',\n    body: {\n      model: cfg.model,\n      max_tokens: cfg.maxTokens,\n      messages: [{ role: 'user', content: p.text }],\n    },\n  });\n}\n\nif (!requests.length) throw new Error('no enabled prompts matched an enabled brand');\nreturn requests.map((json) => ({ json }));\n"
+      }
+    },
+    {
+      "id": "a9000000-0000-4000-8000-000000000006",
+      "name": "Ask the model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1180,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "a9000000-0000-4000-8000-000000000007",
+      "name": "Detect mentions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Turns answers into measurements. Detection is deliberately boring and checkable:\n// word-boundary matching on names and aliases, plain substring for domains.\nconst cfg = $('Config').first().json;\nconst requests = $('Build measurement requests').all().map((i) => i.json);\nconst answers = $input.all();\n\n// A brand called \"Lune\" must not match \"Lunela\". Word boundaries in JS do not treat a\n// dot or a hyphen as part of a word, so names are escaped and wrapped explicitly.\nconst escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\nconst firstIndexOfName = (text, name) => {\n  const re = new RegExp('(^|[^\\\\p{L}\\\\p{N}])' + escapeRe(name) + '($|[^\\\\p{L}\\\\p{N}])', 'iu');\n  const m = re.exec(text);\n  return m ? m.index : -1;\n};\nconst firstIndexOfDomain = (text, domain) => {\n  if (!domain) return -1;\n  const i = text.toLowerCase().indexOf(String(domain).toLowerCase());\n  return i;\n};\n\nconst rows = [];\nlet failed = 0;\n\nfor (let idx = 0; idx < answers.length; idx++) {\n  const req = requests[idx];\n  if (!req) continue;\n  const res = answers[idx].json || {};\n\n  const text = Array.isArray(res.content)\n    ? res.content.filter((c) => c.type === 'text').map((c) => c.text).join('')\n    : '';\n\n  if (!text) {\n    // A failed call is not a zero. Recording it as \"not mentioned\" would invent a drop.\n    failed++;\n    continue;\n  }\n\n  const names = [req.brand.name, ...req.brand.aliases].filter(Boolean);\n  let brandIdx = -1;\n  for (const n of names) {\n    const i = firstIndexOfName(text, n);\n    if (i !== -1 && (brandIdx === -1 || i < brandIdx)) brandIdx = i;\n  }\n  const domainIdx = firstIndexOfDomain(text, req.brand.domain);\n  const cited = domainIdx !== -1;\n  if (brandIdx === -1 && cited) brandIdx = domainIdx;\n\n  // Position is a rank among tracked names, not a character offset: \"third thing\n  // mentioned\" is what a human reads, and it survives answers of different lengths.\n  const marks = [];\n  if (brandIdx !== -1) marks.push({ who: 'brand', at: brandIdx });\n  for (const c of req.competitors) {\n    const cNames = [c.name, ...(Array.isArray(c.aliases) ? c.aliases : [])].filter(Boolean);\n    let ci = -1;\n    for (const n of cNames) {\n      const i = firstIndexOfName(text, n);\n      if (i !== -1 && (ci === -1 || i < ci)) ci = i;\n    }\n    const cd = firstIndexOfDomain(text, c.domain);\n    if (ci === -1 && cd !== -1) ci = cd;\n    if (ci !== -1) marks.push({ who: c.name, at: ci });\n  }\n  marks.sort((a, b) => a.at - b.at);\n  const position = brandIdx === -1 ? null : marks.findIndex((m) => m.who === 'brand') + 1;\n\n  rows.push({\n    run_date: req.runDate,\n    brand_id: req.brandId,\n    prompt_id: req.promptId,\n    model: req.model,\n    mentioned: brandIdx !== -1,\n    position,\n    cited,\n    answer: text.slice(0, 2000),\n  });\n}\n\nreturn [{\n  json: {\n    rows,\n    measured: rows.length,\n    failed,\n    runDate: cfg.runDate,\n    model: cfg.model,\n    chatId: cfg.chatId,\n    runsUrl: cfg.runsUrl,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a9000000-0000-4000-8000-000000000008",
+      "name": "Load previous runs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1660,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.historyUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "a9000000-0000-4000-8000-000000000009",
+      "name": "Compare and report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1900,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Compares this run with the previous one and writes the message. A delta needs a\n// baseline, and the baseline is whatever the most recent earlier run_date holds, so a\n// skipped week compares against the last real measurement rather than against nothing.\nconst state = $('Detect mentions').first().json;\nconst history = $input.all().map((i) => i.json).filter((r) => r && r.run_date);\n\nconst rows = state.rows;\nconst share = (list) => (list.length ? list.filter((r) => r.mentioned).length / list.length : 0);\n\nconst relevant = history.filter((h) => h.model === state.model);\nconst previousDate = relevant.length ? relevant[0].run_date : null;\nconst previous = relevant.filter((h) => h.run_date === previousDate);\nconst prevByPrompt = new Map(previous.map((p) => [p.prompt_id, p]));\n\nconst nowShare = share(rows);\nconst prevShare = previous.length ? share(previous) : null;\nconst delta = prevShare === null ? null : nowShare - prevShare;\n\nconst lost = rows.filter((r) => !r.mentioned && prevByPrompt.get(r.prompt_id)?.mentioned);\nconst gained = rows.filter((r) => r.mentioned && prevByPrompt.get(r.prompt_id) && !prevByPrompt.get(r.prompt_id).mentioned);\n\nconst pct = (x) => (x * 100).toFixed(0) + '%';\nconst esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst parts = ['<b>AI search visibility</b>', ''];\nparts.push('Mentioned in ' + rows.filter((r) => r.mentioned).length + ' of ' + rows.length\n  + ' answers (' + pct(nowShare) + ')');\nif (delta === null) {\n  parts.push('No earlier run to compare against yet.');\n} else {\n  const sign = delta > 0 ? '+' : '';\n  parts.push('Previous run ' + previousDate + ': ' + pct(prevShare)\n    + ' · change ' + sign + (delta * 100).toFixed(0) + ' points');\n}\nconst cited = rows.filter((r) => r.cited).length;\nparts.push('Domain cited in ' + cited + ' answer' + (cited === 1 ? '' : 's'));\nif (state.failed) parts.push(state.failed + ' prompt' + (state.failed === 1 ? '' : 's') + ' failed and were not recorded');\nparts.push('');\n\nif (lost.length) {\n  parts.push('<b>Lost since last run</b>');\n  for (const r of lost.slice(0, 10)) parts.push('• ' + esc(r.prompt_id));\n  parts.push('');\n}\nif (gained.length) {\n  parts.push('<b>Gained</b>');\n  for (const r of gained.slice(0, 10)) parts.push('• ' + esc(r.prompt_id));\n  parts.push('');\n}\nparts.push('<i>Model ' + esc(state.model) + ', run ' + esc(state.runDate) + '. Measurement only, no causes.</i>');\n\nreturn [{\n  json: {\n    rows,\n    stored: rows.length,\n    nowShare,\n    prevShare,\n    previousDate,\n    delta,\n    lost: lost.length,\n    gained: gained.length,\n    failed: state.failed,\n    chatId: state.chatId,\n    runsUrl: state.runsUrl,\n    text: parts.join('\\n').trim(),\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a9000000-0000-4000-8000-00000000000a",
+      "name": "Store measurements",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2140,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.runsUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rows) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "a9000000-0000-4000-8000-00000000000b",
+      "name": "Send report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2380,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Compare and report').first().json.chatId }}",
+        "text": "={{ $('Compare and report').first().json.text }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every Monday at 09:00": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Load brands",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load brands": {
+      "main": [
+        [
+          {
+            "node": "Load prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load prompts": {
+      "main": [
+        [
+          {
+            "node": "Build measurement requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build measurement requests": {
+      "main": [
+        [
+          {
+            "node": "Ask the model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask the model": {
+      "main": [
+        [
+          {
+            "node": "Detect mentions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect mentions": {
+      "main": [
+        [
+          {
+            "node": "Load previous runs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load previous runs": {
+      "main": [
+        [
+          {
+            "node": "Compare and report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare and report": {
+      "main": [
+        [
+          {
+            "node": "Store measurements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store measurements": {
+      "main": [
+        [
+          {
+            "node": "Send report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "active": false
+}
