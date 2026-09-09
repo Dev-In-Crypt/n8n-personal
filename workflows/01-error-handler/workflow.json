@@ -1,0 +1,187 @@
+{
+  "name": "[01] Error handler with Telegram alert",
+  "nodes": [
+    {
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Build payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Builds a compact payload from the Error Trigger data and decides whether this is a\n// duplicate. The anti-spam state lives in workflow static data: key -> last alert time.\nconst BASE_URL = 'http://localhost:5678';\nconst CHAT_ID = '';            // TODO: id of the ops Telegram chat\nconst TTL_MS = 60 * 60 * 1000; // anti-spam window: 1 hour\n\nconst esc = (s) => String(s)\n  .replace(/&/g, '&amp;')\n  .replace(/</g, '&lt;')\n  .replace(/>/g, '&gt;');\n\nconst src = $input.first().json || {};\nconst wf = src.workflow || {};\nconst ex = src.execution || {};\nconst err = ex.error || {};\n\nconst workflowId = wf.id || 'unknown';\nconst workflowName = wf.name || 'unknown';\nconst executionId = ex.id === undefined || ex.id === null ? '' : String(ex.id);\nconst failedNode = ex.lastNodeExecuted || (err.node && err.node.name) || 'unknown';\nconst message = String(err.message || 'no error message').slice(0, 500);\n\nconst url = executionId\n  ? BASE_URL + '/workflow/' + workflowId + '/executions/' + executionId\n  : BASE_URL + '/workflow/' + workflowId;\n\n// anti-spam\nconst store = $getWorkflowStaticData('global');\nif (!store.alerts) store.alerts = {};\nconst now = Date.now();\nfor (const k of Object.keys(store.alerts)) {\n  if (now - store.alerts[k] > TTL_MS) delete store.alerts[k];\n}\nconst key = workflowId + '|' + failedNode + '|' + message;\nconst last = store.alerts[key];\nconst isDuplicate = typeof last === 'number' && (now - last) < TTL_MS;\nif (!isDuplicate) store.alerts[key] = now;\n\nconst text = [\n  '<b>n8n: workflow failed</b>',\n  '',\n  'Workflow: <b>' + esc(workflowName) + '</b>',\n  'Node: <code>' + esc(failedNode) + '</code>',\n  'Execution: <code>' + esc(executionId || 'none') + '</code>',\n  '',\n  'Error:',\n  '<code>' + esc(message) + '</code>',\n  '',\n  '<a href=\"' + url + '\">Open in n8n</a>'\n].join('\\n');\n\nreturn [{\n  json: {\n    chatId: CHAT_ID,\n    workflowId, workflowName, failedNode, executionId,\n    message, url, isDuplicate, text,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Duplicate within the hour?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.isDuplicate }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Suppressed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        700,
+        120
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1000000-0000-4000-8000-000000000001",
+              "name": "alerted",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "s1000000-0000-4000-8000-000000000002",
+              "name": "reason",
+              "value": "duplicate_within_1h",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Send alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        700,
+        -120
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Outcome of the handler. The Telegram node runs with onError: continueRegularOutput,\n// so a delivery failure is reported here instead of crashing the workflow.\nconst j = $input.first().json || {};\nconst failed = Boolean(j.error);\nreturn [{\n  json: {\n    alerted: !failed,\n    reason: failed ? 'telegram_failed: ' + String(j.error).slice(0, 200) : 'sent',\n  },\n}];\n"
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build payload": {
+      "main": [
+        [
+          {
+            "node": "Duplicate within the hour?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate within the hour?": {
+      "main": [
+        [
+          {
+            "node": "Suppressed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send alert": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "active": false
+}

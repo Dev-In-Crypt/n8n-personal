@@ -1,0 +1,21 @@
+{
+  "day": 1,
+  "slug": "error-handler",
+  "category": "template",
+  "workflowName": "[01] Error handler with Telegram alert",
+  "nodeVersions": {
+    "n8n-nodes-base.errorTrigger": 1,
+    "n8n-nodes-base.code": 2,
+    "n8n-nodes-base.if": 2.3,
+    "n8n-nodes-base.set": 3.4,
+    "n8n-nodes-base.telegram": 1.2
+  },
+  "builtAt": "2026-08-31",
+  "renamedToEnglishAt": "2026-09-09",
+  "validated": {
+    "profile": "strict",
+    "errors": 0,
+    "warnings": 2
+  },
+  "active": false
+}

@@ -1,0 +1,18 @@
+# This repository publishes finished n8n workflows only.
+# The local build tooling stays on disk and out of git.
+
+*.ps1
+docker-compose.yml
+claude_desktop_config*.json
+example-prompts.md
+SETUP.md
+docs/
+state/
+n8n_data/
+.env
+*.key
+*.bak
+
+# Workflows are added one by one, once they are actually built and verified.
+workflows/*
+!workflows/01-error-handler
