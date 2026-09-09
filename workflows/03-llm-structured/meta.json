@@ -1,0 +1,20 @@
+{
+  "day": 3,
+  "slug": "llm-structured",
+  "category": "template",
+  "workflowName": "[03] LLM call with schema and retries",
+  "nodeVersions": {
+    "n8n-nodes-base.executeWorkflowTrigger": 1.2,
+    "n8n-nodes-base.code": 2,
+    "n8n-nodes-base.httpRequest": 4.4,
+    "n8n-nodes-base.if": 2.3,
+    "n8n-nodes-base.wait": 1.1
+  },
+  "builtAt": "2026-09-09",
+  "validated": {
+    "profile": "strict",
+    "errors": 0,
+    "warnings": 4
+  },
+  "active": false
+}

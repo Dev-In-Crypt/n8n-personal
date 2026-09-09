@@ -17,3 +17,4 @@ n8n_data/
 workflows/*
 !workflows/01-error-handler
 !workflows/02-dedup-store
+!workflows/03-llm-structured

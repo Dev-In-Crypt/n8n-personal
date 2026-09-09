@@ -1,0 +1,16 @@
+{
+  "system": "You classify support tickets.",
+  "user": "Ticket: the export button does nothing on Safari.",
+  "model": "claude-sonnet-4-5",
+  "max_retries": 2,
+  "schema": {
+    "type": "object",
+    "required": ["category", "severity", "summary"],
+    "properties": {
+      "category": { "type": "string", "enum": ["bug", "question", "feature"] },
+      "severity": { "type": "integer" },
+      "summary": { "type": "string" },
+      "tags": { "type": "array", "items": { "type": "string" } }
+    }
+  }
+}
