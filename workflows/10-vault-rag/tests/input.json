@@ -1,0 +1,8 @@
+{
+  "telegramMessage": {
+    "message": { "chat": { "id": 123456789 }, "text": "how does production deploy work?" }
+  },
+  "strangerMessage": {
+    "message": { "chat": { "id": 999 }, "text": "how does production deploy work?" }
+  }
+}

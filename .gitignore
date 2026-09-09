@@ -24,3 +24,4 @@ workflows/*
 !workflows/07-eu-funding-radar
 !workflows/08-changelog-to-posts
 !workflows/09-aeo-visibility
+!workflows/10-vault-rag

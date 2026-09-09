@@ -1,0 +1,53 @@
+{
+  "day": 10,
+  "slug": "vault-rag",
+  "category": "portfolio",
+  "workflows": [
+    {
+      "file": "workflow-indexer.json",
+      "name": "[10a] Vault indexer",
+      "nodes": 13
+    },
+    {
+      "file": "workflow-bot.json",
+      "name": "[10b] Vault question bot",
+      "nodes": 11
+    }
+  ],
+  "calls": {
+    "02": "Dedup store on Supabase",
+    "03": "LLM call with schema and retries"
+  },
+  "nodeVersions": {
+    "n8n-nodes-base.scheduleTrigger": 1.3,
+    "n8n-nodes-base.code": 2,
+    "n8n-nodes-base.readWriteFile": 1.1,
+    "n8n-nodes-base.extractFromFile": 1.1,
+    "n8n-nodes-base.executeWorkflow": 1.3,
+    "n8n-nodes-base.if": 2.3,
+    "n8n-nodes-base.noOp": 1,
+    "n8n-nodes-base.httpRequest": 4.4,
+    "n8n-nodes-base.telegramTrigger": 1.4,
+    "n8n-nodes-base.telegram": 1.2
+  },
+  "builtAt": "2026-09-09",
+  "validated": {
+    "profile": "strict",
+    "errors": 0,
+    "warnings": {
+      "indexer": 8,
+      "bot": 7
+    }
+  },
+  "codeHashes": {
+    "indexer:Config": "3f1750923b66",
+    "indexer:Chunk notes": "c41139a75bd2",
+    "indexer:Build embedding request": "fa49747f7cc8",
+    "indexer:Build rows": "5c3440ba1bdf",
+    "bot:Config": "931e9f96d463",
+    "bot:Prepare search": "964baee6af09",
+    "bot:Build answer request": "3553e947c69a",
+    "bot:Format reply": "f0443ce5adc7"
+  },
+  "active": false
+}
