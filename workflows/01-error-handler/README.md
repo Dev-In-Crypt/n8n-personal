@@ -38,7 +38,7 @@ advice, not defects.
 
 The "Build payload" logic is exercised outside n8n by `tests/run.mjs`, which loads the
 code straight out of `workflow.json` and stubs `$input` and `$getWorkflowStaticData`.
-Twelve checks, all green:
+Eleven checks, all green:
 
 ```
 node tests/run.mjs

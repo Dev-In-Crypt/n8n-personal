@@ -70,8 +70,7 @@ errors. The remaining warnings are generic advice about Code nodes and the crede
 type being named explicitly, which is intended.
 
 `tests/run.mjs` drives the whole loop outside n8n: node code is read out of
-`workflow.json`, the network call is replaced by canned replies. Twenty-four checks,
-all green:
+`workflow.json`, the network call is replaced by canned replies. Twenty-seven checks, all green:
 
 ```
 node tests/run.mjs

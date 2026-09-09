@@ -54,8 +54,7 @@ errors. Remaining warnings are generic n8n advice about Code nodes and about the
 credential type being named explicitly, which is exactly what is wanted here.
 
 The "Build keys", "Diff against seen" and "Return result" logic is exercised outside
-n8n by `tests/run.mjs`, which loads the code straight out of `workflow.json`. Seventeen
-checks, all green:
+n8n by `tests/run.mjs`, which loads the code straight out of `workflow.json`. Sixteen checks, all green:
 
 ```
 node tests/run.mjs

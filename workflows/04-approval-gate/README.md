@@ -69,7 +69,7 @@ errors. Remaining warnings are the usual advice about Code nodes and the credent
 being named explicitly.
 
 `tests/run.mjs` runs the gate's logic outside n8n, with the Telegram wait replaced by
-canned resume payloads. Twenty-four checks, all green:
+canned resume payloads. Twenty-six checks, all green:
 
 ```
 node tests/run.mjs
