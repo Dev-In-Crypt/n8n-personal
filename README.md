@@ -34,3 +34,4 @@ inactive and carry no credentials.
 | 01 | [Error handler with Telegram alert](workflows/01-error-handler) | one place that reports any failing workflow in the instance |
 | 02 | [Dedup store on Supabase](workflows/02-dedup-store) | returns only the items a source has never produced before |
 | 03 | [LLM call with schema and retries](workflows/03-llm-structured) | prompt plus JSON schema in, validated object out, format errors self-repaired |
+| 04 | [Human approval gate via Telegram](workflows/04-approval-gate) | suspends a workflow until a human approves or rejects, with an audit trail |

@@ -1,0 +1,7 @@
+{
+  "source": "changelog-to-posts",
+  "title": "Draft post for review",
+  "body": "n8n 2.x ships a built-in MCP server. Here is why that matters for small teams...",
+  "chat_id": "123456789",
+  "timeout_hours": 24
+}

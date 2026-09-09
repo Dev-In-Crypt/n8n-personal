@@ -1,0 +1,19 @@
+{
+  "day": 4,
+  "slug": "approval-gate",
+  "category": "template",
+  "workflowName": "[04] Human approval gate via Telegram",
+  "nodeVersions": {
+    "n8n-nodes-base.executeWorkflowTrigger": 1.2,
+    "n8n-nodes-base.code": 2,
+    "n8n-nodes-base.httpRequest": 4.4,
+    "n8n-nodes-base.telegram": 1.2
+  },
+  "builtAt": "2026-09-09",
+  "validated": {
+    "profile": "strict",
+    "errors": 0,
+    "warnings": 6
+  },
+  "active": false
+}

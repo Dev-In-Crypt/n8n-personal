@@ -1,0 +1,227 @@
+{
+  "name": "[04] Human approval gate via Telegram",
+  "nodes": [
+    {
+      "id": "d4000000-0000-4000-8000-000000000001",
+      "name": "When called by another workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "d4000000-0000-4000-8000-000000000002",
+      "name": "Prepare request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validates the request, mints its id and builds everything the later nodes need.\n// Config lives here so there is a single place to edit.\nconst SUPABASE_URL = '';      // TODO: https://<project>.supabase.co\nconst DEFAULT_CHAT_ID = '';   // TODO: fallback ops chat, used when the caller omits chat_id\nconst DEFAULT_TIMEOUT_HOURS = 24;\nconst MAX_BODY = 3000;        // Telegram rejects messages over ~4096 characters\n\nconst input = $input.first().json || {};\n\nconst title = String(input.title || '').trim();\nif (!title) throw new Error('title is required');\n\nconst body = String(input.body || '').trim();\nif (!body) throw new Error('body is required');\n\nconst chatId = String(input.chat_id || DEFAULT_CHAT_ID).trim();\nif (!chatId) throw new Error('chat_id is required and no default is configured');\n\nif (!SUPABASE_URL) throw new Error('SUPABASE_URL is not configured in \"Prepare request\"');\n\nconst timeoutHours = input.timeout_hours === undefined ? DEFAULT_TIMEOUT_HOURS : Number(input.timeout_hours);\nif (!Number.isFinite(timeoutHours) || timeoutHours <= 0 || timeoutHours > 168) {\n  throw new Error('timeout_hours must be a number between 0 and 168');\n}\n\nconst source = String(input.source || 'unknown').trim();\n\n// The message is plain text: the draft is arbitrary content and HTML parsing would\n// make an unbalanced tag in a draft break delivery of the very thing under review.\nconst truncated = body.length > MAX_BODY;\nconst message = title + '\\n\\n' + (truncated ? body.slice(0, MAX_BODY) + '\\n\\n[truncated]' : body);\n\nconst base = SUPABASE_URL.replace(/\\/+$/, '');\nconst requestId = crypto.randomUUID();\n\nreturn [{\n  json: {\n    requestId,\n    source,\n    title,\n    chatId,\n    message,\n    truncated,\n    timeoutHours,\n    insertUrl: base + '/rest/v1/approvals',\n    // The decision write is filtered on status=pending, so the first decision wins.\n    decisionUrl: base + '/rest/v1/approvals?id=eq.' + requestId + '&status=eq.pending',\n    row: {\n      id: requestId,\n      source,\n      title,\n      status: 'pending',\n      created_at: new Date().toISOString(),\n    },\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "d4000000-0000-4000-8000-000000000003",
+      "name": "Log request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.insertUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.row) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "d4000000-0000-4000-8000-000000000004",
+      "name": "Ask for approval",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        700,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendAndWait",
+        "chatId": "={{ $('Prepare request').first().json.chatId }}",
+        "message": "={{ $('Prepare request').first().json.message }}",
+        "approvalOptions": {
+          "values": {
+            "approvalType": "double"
+          }
+        },
+        "options": {
+          "limitWaitTime": {
+            "values": {
+              "limitType": "afterTimeInterval",
+              "resumeAmount": "={{ $('Prepare request').first().json.timeoutHours }}",
+              "resumeUnit": "hours"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d4000000-0000-4000-8000-000000000005",
+      "name": "Record decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Turns the resumed execution into a decision. Three outcomes only.\n// A timed-out wait resumes without an approval field, which is the expired case.\nconst state = $('Prepare request').first().json;\nconst response = $input.first().json || {};\nconst data = response.data || response;\n\nconst approved = data.approved;\nconst timedOut = approved === undefined || approved === null;\n\nconst decision = timedOut ? 'expired' : (approved ? 'approved' : 'rejected');\nconst decidedAt = new Date().toISOString();\n\nreturn [{\n  json: {\n    ...state,\n    decision,\n    decidedAt,\n    timedOut,\n    patch: {\n      status: decision,\n      decided_at: decidedAt,\n      timed_out: timedOut,\n    },\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "d4000000-0000-4000-8000-000000000006",
+      "name": "Save decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1180,
+        0
+      ],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $json.decisionUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.patch) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "d4000000-0000-4000-8000-000000000007",
+      "name": "Return result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Single exit shape for the caller.\nconst s = $input.first().json;\nreturn [{\n  json: {\n    request_id: s.requestId,\n    decision: s.decision,\n    decided_at: s.decidedAt,\n    timed_out: s.timedOut,\n    title: s.title,\n    source: s.source,\n  },\n}];\n"
+      }
+    }
+  ],
+  "connections": {
+    "When called by another workflow": {
+      "main": [
+        [
+          {
+            "node": "Prepare request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare request": {
+      "main": [
+        [
+          {
+            "node": "Log request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log request": {
+      "main": [
+        [
+          {
+            "node": "Ask for approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask for approval": {
+      "main": [
+        [
+          {
+            "node": "Record decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record decision": {
+      "main": [
+        [
+          {
+            "node": "Save decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save decision": {
+      "main": [
+        [
+          {
+            "node": "Return result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "active": false
+}
