@@ -1,0 +1,18 @@
+{
+  "products": [
+    { "product": "lunela", "url": "https://api.github.com/repos/example/lunela/releases", "items_path": "", "field_map": {} },
+    { "product": "docsite", "url": "https://example.com/changelog.json", "items_path": "entries",
+      "field_map": { "id": "ref", "title": "headline", "body": "details", "url": "permalink" } }
+  ],
+  "fetched": [
+    [
+      { "id": 101, "tag_name": "v1.4.0", "name": "Offline mode", "html_url": "https://github.com/example/lunela/releases/tag/v1.4.0", "published_at": "2026-09-08T10:00:00Z", "body": "Stories now download for offline playback, so bedtime works on a plane." },
+      { "id": 102, "tag_name": "v1.3.9", "name": "Dependency bumps", "html_url": "https://github.com/example/lunela/releases/tag/v1.3.9", "published_at": "2026-09-01T10:00:00Z", "body": "Bumped eslint and refactored the CI pipeline. No user facing changes." },
+      { "id": 103, "tag_name": "v1.5.0-rc1", "name": "Release candidate", "html_url": "https://github.com/example/lunela/releases/tag/v1.5.0-rc1", "published_at": "2026-09-09T10:00:00Z", "draft": true, "body": "Not published yet." }
+    ],
+    { "entries": [
+      { "ref": "d-1", "headline": "Search across all docs", "details": "Full text search now spans every version of the docs.", "permalink": "https://example.com/changelog#d-1" },
+      { "ref": "d-2", "headline": "No link entry", "details": "This one has no permalink." }
+    ] }
+  ]
+}

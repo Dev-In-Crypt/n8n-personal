@@ -38,3 +38,4 @@ inactive and carry no credentials.
 | 05 | [Morning digest of sources](workflows/05-sources-digest) | one grouped Telegram digest a day, no repeats, silence when nothing is new |
 | 06 | [App Store review monitor](workflows/06-appstore-reviews) | polls review feeds, tags them, alerts only on low ratings and bug reports |
 | 07 | [EU Funding Radar](workflows/07-eu-funding-radar) | scores European funding calls against a profile, with verified quotes only |
+| 08 | [Changelog to post drafts](workflows/08-changelog-to-posts) | turns releases into post drafts behind a human gate, never publishes |

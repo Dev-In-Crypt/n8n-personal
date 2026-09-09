@@ -1,0 +1,662 @@
+{
+  "name": "[08] Changelog to post drafts",
+  "nodes": [
+    {
+      "id": "a8000000-0000-4000-8000-000000000001",
+      "name": "Every day at 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000002",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The only place to configure this workflow.\nconst SUPABASE_URL = '';   // TODO: https://<project>.supabase.co\nconst CHAT_ID = '';        // TODO: chat where drafts are reviewed\nconst APPROVAL_TIMEOUT_HOURS = 24;\n\nif (!SUPABASE_URL) throw new Error('SUPABASE_URL is not configured in \"Config\"');\nif (!CHAT_ID) throw new Error('CHAT_ID is not configured in \"Config\"');\n\nconst base = SUPABASE_URL.replace(/\\/+$/, '');\nreturn [{\n  json: {\n    chatId: CHAT_ID,\n    approvalTimeoutHours: APPROVAL_TIMEOUT_HOURS,\n    productsUrl: base + '/rest/v1/changelog_sources?enabled=eq.true',\n    draftsUrl: base + '/rest/v1/post_drafts',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000003",
+      "name": "Load products",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $json.productsUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000004",
+      "name": "Fetch changelog",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        700,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-changelog-to-posts"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000005",
+      "name": "Normalise entries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Flattens each product's changelog into entries. Products are rows: url, dot path to\n// the array, and a field map. GitHub's releases API needs no map, its default field\n// names are already handled below.\n//\n// Responses pair with product rows by position, which is why the fetch node continues\n// on error: a failed product must still emit an item.\nconst get = (obj, path) => {\n  const keys = String(path || '').split('.').filter(Boolean);\n  if (!keys.length) return undefined;\n  return keys.reduce((acc, key) => (acc === null || acc === undefined ? undefined : acc[key]), obj);\n};\nconst text = (x) => (x === null || x === undefined ? '' : String(x));\n\nconst products = $('Load products').all().map((i) => i.json);\nconst fetched = $input.all();\n\nconst entries = [];\nfor (let idx = 0; idx < fetched.length; idx++) {\n  const json = fetched[idx].json || {};\n  const product = products[idx];\n  if (!product) continue;\n\n  const rawList = get(json, product.items_path) ?? (Array.isArray(json) ? json : json.items ?? json.releases);\n  const list = Array.isArray(rawList) ? rawList : rawList ? [rawList] : [];\n  const map = product.field_map || {};\n\n  for (const raw of list) {\n    if (!raw || typeof raw !== 'object') continue;\n    if (raw.draft === true) continue;   // unpublished GitHub release\n\n    const id = text(get(raw, map.id) ?? raw.id ?? raw.tag_name ?? raw.version);\n    const title = text(get(raw, map.title) ?? raw.name ?? raw.title ?? raw.tag_name).trim();\n    if (!id || !title) continue;\n\n    const body = text(get(raw, map.body) ?? raw.body ?? raw.description ?? raw.notes)\n      .replace(/\\r/g, '').trim();\n\n    entries.push({\n      id: 'changelog:' + product.product + ':' + id,\n      product: product.product,\n      title,\n      url: text(get(raw, map.url) ?? raw.html_url ?? raw.url ?? raw.link) || null,\n      published_at: raw.published_at || raw.created_at || raw.date || null,\n      body: body.slice(0, 6000),\n    });\n  }\n}\n\nconst cfg = $('Config').first().json;\nreturn [{\n  json: {\n    source: 'changelog',\n    key_field: 'id',\n    items: entries,\n    chatId: cfg.chatId,\n    approvalTimeoutHours: cfg.approvalTimeoutHours,\n    draftsUrl: cfg.draftsUrl,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000006",
+      "name": "Drop already seen",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1180,
+        0
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "aaq4oVxCOZbz0Ksc",
+          "mode": "list",
+          "cachedResultName": "[02] Dedup store on Supabase"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000007",
+      "name": "Any new entries?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1420,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b8000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.new_items.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000008",
+      "name": "Nothing new",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1660,
+        140
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000009",
+      "name": "Build occasion request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// First model call: which of these entries is worth telling anyone about.\nconst dedup = $input.first().json || {};\nconst state = $('Normalise entries').first().json;\nconst items = Array.isArray(dedup.new_items) ? dedup.new_items : [];\n\nconst list = items.map((e) => [\n  'id: ' + e.id,\n  'product: ' + e.product,\n  'title: ' + e.title,\n  'url: ' + (e.url || 'none'),\n  'notes:\\n' + e.body,\n].join('\\n')).join('\\n\\n---\\n\\n');\n\nreturn [{\n  json: {\n    ...state,\n    entries: items,\n    count: items.length,\n    system: 'You find things in a product changelog that a customer would care about.'\n      + ' Most changelog entries are not worth a post. You never invent evidence:'\n      + ' evidence_quote must be copied verbatim from the entry, and it is checked.',\n    user: 'For each entry decide whether it is worth telling users about. Skip refactors,'\n      + ' dependency bumps, CI changes and internal cleanups entirely. Return one occasion'\n      + ' per entry that qualifies, and nothing for the ones that do not.\\n\\n' + list,\n    max_retries: 2,\n    schema: {\n      type: 'object',\n      required: ['occasions'],\n      properties: {\n        occasions: {\n          type: 'array',\n          items: {\n            type: 'object',\n            required: ['entry_id', 'headline', 'evidence_quote', 'audience_value'],\n            properties: {\n              entry_id: { type: 'string' },\n              headline: { type: 'string' },\n              evidence_quote: { type: 'string' },\n              audience_value: { type: 'string' },\n            },\n          },\n        },\n      },\n    },\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-00000000000a",
+      "name": "Find occasions",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1900,
+        -120
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SgxyRPkD8HkhXQAn",
+          "mode": "list",
+          "cachedResultName": "[03] LLM call with schema and retries"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-00000000000b",
+      "name": "Verify occasions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2140,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Same rule as the funding radar: a claim without a verbatim quote from the entry is\n// dropped, not softened. This is what makes \"no post without a source\" true at the\n// occasion stage rather than only at the draft stage.\nconst llm = $input.first().json || {};\nconst state = $('Build occasion request').first().json;\n\nconst byId = new Map(state.entries.map((e) => [e.id, e]));\nconst norm = (s) => String(s || '').replace(/\\s+/g, ' ').trim().toLowerCase();\n\nconst raw = llm.ok && llm.data && Array.isArray(llm.data.occasions) ? llm.data.occasions : [];\n\nconst occasions = [];\nlet rejected = 0;\nfor (const o of raw) {\n  const entry = byId.get(o.entry_id);\n  if (!entry) { rejected++; continue; }               // hallucinated entry id\n  const quote = String(o.evidence_quote || '').trim();\n  const haystack = norm(entry.title + ' ' + entry.body);\n  if (quote.length < 12 || !haystack.includes(norm(quote))) { rejected++; continue; }\n  if (!entry.url) { rejected++; continue; }           // no source url, no post\n\n  occasions.push({\n    entry_id: entry.id,\n    product: entry.product,\n    headline: String(o.headline || '').trim(),\n    audience_value: String(o.audience_value || '').trim(),\n    evidence: quote,\n    source_url: entry.url,\n    entry_title: entry.title,\n    entry_body: entry.body,\n  });\n}\n\nreturn [{\n  json: {\n    ...state,\n    occasions,\n    occasionCount: occasions.length,\n    rejectedOccasions: rejected,\n    consideredEntries: state.count,\n    degraded: !llm.ok,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-00000000000c",
+      "name": "Any occasions?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2380,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b8000000-0000-4000-8000-000000000002",
+              "leftValue": "={{ $json.occasionCount }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-00000000000d",
+      "name": "Nothing worth posting",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2620,
+        20
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "a8000000-0000-4000-8000-00000000000e",
+      "name": "Build drafts request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2620,
+        -240
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Second model call: two drafts per occasion. The source url is not asked of the model,\n// it is carried from the entry, so a draft cannot end up pointing at an invented link.\nconst state = $input.first().json;\n\nconst list = state.occasions.map((o) => [\n  'occasion_id: ' + o.entry_id,\n  'product: ' + o.product,\n  'headline: ' + o.headline,\n  'why users care: ' + o.audience_value,\n  'evidence: ' + o.evidence,\n].join('\\n')).join('\\n\\n---\\n\\n');\n\nreturn [{\n  json: {\n    ...state,\n    system: 'You draft short product update posts. You write plainly, never hype, never'\n      + ' promise dates, and never claim anything the evidence does not support.',\n    user: 'For each occasion write two drafts, one for a short-form feed and one for a'\n      + ' longer professional feed. Do not include links: they are added afterwards.'\n      + ' Keep the short one under 280 characters.\\n\\n' + list,\n    max_retries: 2,\n    schema: {\n      type: 'object',\n      required: ['drafts'],\n      properties: {\n        drafts: {\n          type: 'array',\n          items: {\n            type: 'object',\n            required: ['occasion_id', 'platform', 'text'],\n            properties: {\n              occasion_id: { type: 'string' },\n              platform: { type: 'string', enum: ['short', 'long'] },\n              text: { type: 'string' },\n              cta: { type: 'string' },\n            },\n          },\n        },\n      },\n    },\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-00000000000f",
+      "name": "Write drafts",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2860,
+        -240
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SgxyRPkD8HkhXQAn",
+          "mode": "list",
+          "cachedResultName": "[03] LLM call with schema and retries"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000010",
+      "name": "Prepare approval",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        -240
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Assembles the rows and the text a human reviews. Rows are built here, before the gate,\n// so that approval is the only thing standing between them and the queue: nothing is\n// written on the way in.\nconst llm = $input.first().json || {};\nconst state = $('Build drafts request').first().json;\n\nconst byId = new Map(state.occasions.map((o) => [o.entry_id, o]));\nconst drafts = llm.ok && llm.data && Array.isArray(llm.data.drafts) ? llm.data.drafts : [];\n\nconst rows = [];\nfor (const d of drafts) {\n  const o = byId.get(d.occasion_id);\n  if (!o) continue;                        // a draft for an occasion that does not exist\n  const body = String(d.text || '').trim();\n  if (!body) continue;\n\n  rows.push({\n    product: o.product,\n    occasion: o.headline,\n    platform: d.platform === 'long' ? 'long' : 'short',\n    text: body,\n    cta: String(d.cta || '').trim() || null,\n    // Carried from the entry, never from the model.\n    source_url: o.source_url,\n    evidence: o.evidence,\n    status: 'ready',\n  });\n}\n\nconst preview = rows.map((r, i) =>\n  (i + 1) + '. [' + r.platform + '] ' + r.occasion + '\\n' + r.text + '\\n' + r.source_url\n).join('\\n\\n');\n\nreturn [{\n  json: {\n    ...state,\n    rows,\n    draftCount: rows.length,\n    title: rows.length + ' post draft' + (rows.length === 1 ? '' : 's') + ' for review',\n    body: preview || 'No drafts were produced.',\n    source: 'changelog-to-posts',\n    chat_id: state.chatId,\n    timeout_hours: state.approvalTimeoutHours,\n    draftsDegraded: !llm.ok,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000011",
+      "name": "Ask a human",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        3340,
+        -240
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "aK4tZDJ8JKtmRb8v",
+          "mode": "list",
+          "cachedResultName": "[04] Human approval gate via Telegram"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000012",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3580,
+        -240
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b8000000-0000-4000-8000-000000000003",
+              "leftValue": "={{ $json.decision }}",
+              "rightValue": "approved",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000013",
+      "name": "Not approved, nothing written",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3820,
+        -100
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000014",
+      "name": "Stamp approval",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3820,
+        -340
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Runs only on the approved branch. Stamps the approval id onto every row so a queued\n// draft can always be traced back to the decision that let it through.\nconst decision = $input.first().json || {};\nconst state = $('Prepare approval').first().json;\n\nconst rows = state.rows.map((r) => ({ ...r, approval_id: decision.request_id || null }));\n\nreturn [{\n  json: {\n    rows,\n    stored: rows.length,\n    decision: decision.decision,\n    approvalId: decision.request_id || null,\n    draftsUrl: state.draftsUrl,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "a8000000-0000-4000-8000-000000000015",
+      "name": "Queue drafts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4060,
+        -340
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.draftsUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rows) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Every day at 09:00": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Load products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load products": {
+      "main": [
+        [
+          {
+            "node": "Fetch changelog",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch changelog": {
+      "main": [
+        [
+          {
+            "node": "Normalise entries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise entries": {
+      "main": [
+        [
+          {
+            "node": "Drop already seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drop already seen": {
+      "main": [
+        [
+          {
+            "node": "Any new entries?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any new entries?": {
+      "main": [
+        [
+          {
+            "node": "Build occasion request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing new",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build occasion request": {
+      "main": [
+        [
+          {
+            "node": "Find occasions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find occasions": {
+      "main": [
+        [
+          {
+            "node": "Verify occasions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify occasions": {
+      "main": [
+        [
+          {
+            "node": "Any occasions?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any occasions?": {
+      "main": [
+        [
+          {
+            "node": "Build drafts request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing worth posting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build drafts request": {
+      "main": [
+        [
+          {
+            "node": "Write drafts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write drafts": {
+      "main": [
+        [
+          {
+            "node": "Prepare approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare approval": {
+      "main": [
+        [
+          {
+            "node": "Ask a human",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask a human": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Stamp approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Not approved, nothing written",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp approval": {
+      "main": [
+        [
+          {
+            "node": "Queue drafts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "active": false
+}

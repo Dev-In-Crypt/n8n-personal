@@ -22,3 +22,4 @@ workflows/*
 !workflows/05-sources-digest
 !workflows/06-appstore-reviews
 !workflows/07-eu-funding-radar
+!workflows/08-changelog-to-posts
