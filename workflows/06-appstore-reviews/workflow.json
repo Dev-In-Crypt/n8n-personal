@@ -1,0 +1,433 @@
+{
+  "name": "[06] App Store review monitor",
+  "nodes": [
+    {
+      "id": "f6000000-0000-4000-8000-000000000001",
+      "name": "Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "f6000000-0000-4000-8000-000000000002",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The only place to configure this workflow.\nconst APP_ID = '';                       // TODO: numeric App Store id, digits only\nconst COUNTRIES = ['us', 'gb', 'es'];    // storefronts to poll\nconst CHAT_ID = '';                      // TODO: chat that receives alerts\nconst SUPABASE_URL = '';                 // TODO: https://<project>.supabase.co\n// First run on an existing app: mark the current reviews as seen and alert on none of\n// them. Set back to false once the first run has completed.\nconst BOOTSTRAP = true;\n\nif (!/^\\d+$/.test(APP_ID)) throw new Error('APP_ID must be the numeric App Store id');\nif (!CHAT_ID) throw new Error('CHAT_ID is not configured in \"Config\"');\nif (!SUPABASE_URL) throw new Error('SUPABASE_URL is not configured in \"Config\"');\n\nconst base = SUPABASE_URL.replace(/\\/+$/, '');\n\nreturn COUNTRIES.map((country) => ({\n  json: {\n    country,\n    bootstrap: BOOTSTRAP,\n    chatId: CHAT_ID,\n    storeUrl: base + '/rest/v1/app_reviews',\n    feedUrl: 'https://itunes.apple.com/' + country + '/rss/customerreviews/id=' + APP_ID\n      + '/sortBy=mostRecent/json',\n  },\n}));\n"
+      }
+    },
+    {
+      "id": "f6000000-0000-4000-8000-000000000003",
+      "name": "Fetch review feed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $json.feedUrl }}",
+        "options": {}
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "f6000000-0000-4000-8000-000000000004",
+      "name": "Normalise reviews",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Flattens the App Store feeds into review records.\n// The feed's first entry is the app itself, not a review: it has no im:rating, which is\n// how it is filtered out. Feeds with a single review return an object instead of an\n// array, which is the other shape that has to be handled.\nconst val = (x) => (x && typeof x === 'object' && 'label' in x ? x.label : x);\n\nconst reviews = [];\nfor (const item of $input.all()) {\n  const json = item.json || {};\n  const country = json.country || (json.$country || 'unknown');\n  const raw = json.feed && json.feed.entry;\n  if (!raw) continue;\n  const entries = Array.isArray(raw) ? raw : [raw];\n\n  for (const e of entries) {\n    const rating = parseInt(val(e['im:rating']), 10);\n    if (!Number.isInteger(rating)) continue;   // the app metadata entry\n\n    const id = String(val(e.id) || '').trim();\n    if (!id) continue;\n\n    reviews.push({\n      review_id: country + ':' + id,\n      country,\n      rating,\n      title: String(val(e.title) || '').trim(),\n      body: String(val(e.content) || '').replace(/\\s+/g, ' ').trim().slice(0, 1500),\n      version: String(val(e['im:version']) || '').trim() || null,\n      reviewed_at: val(e.updated) ? new Date(val(e.updated)).toISOString() : null,\n    });\n  }\n}\n\nreviews.sort((a, b) => Date.parse(b.reviewed_at || 0) - Date.parse(a.reviewed_at || 0));\n\nconst cfg = $('Config').first().json;\nreturn [{\n  json: {\n    source: 'appstore',\n    key_field: 'review_id',\n    items: reviews,\n    bootstrap: cfg.bootstrap,\n    chatId: cfg.chatId,\n    storeUrl: cfg.storeUrl,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "f6000000-0000-4000-8000-000000000005",
+      "name": "Drop already seen",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        940,
+        0
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "aaq4oVxCOZbz0Ksc",
+          "mode": "list",
+          "cachedResultName": "[02] Dedup store on Supabase"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "f6000000-0000-4000-8000-000000000006",
+      "name": "Any new reviews?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1180,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "g6000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.new_items.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f6000000-0000-4000-8000-000000000007",
+      "name": "Nothing to do",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1420,
+        140
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "f6000000-0000-4000-8000-000000000008",
+      "name": "Build review request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// One LLM call for the whole batch of new reviews.\nconst dedup = $input.first().json || {};\nconst state = $('Normalise reviews').first().json;\nconst items = Array.isArray(dedup.new_items) ? dedup.new_items : [];\n\nconst list = items.map((r) => [\n  'id: ' + r.review_id,\n  'rating: ' + r.rating + '/5, country: ' + r.country + (r.version ? ', version: ' + r.version : ''),\n  'title: ' + r.title,\n  'body: ' + r.body,\n].join('\\n')).join('\\n\\n---\\n\\n');\n\nreturn [{\n  json: {\n    count: items.length,\n    items,\n    bootstrap: state.bootstrap,\n    chatId: state.chatId,\n    storeUrl: state.storeUrl,\n    system: 'You triage app store reviews for the developer of the app.',\n    user: 'For each review return sentiment, a short lowercase theme, whether it reports a'\n      + ' concrete bug, and a suggested_reply drafted for a human to edit and post manually.'\n      + ' Keep suggested_reply under 350 characters, no promises about timelines.\\n\\n' + list,\n    max_retries: 2,\n    schema: {\n      type: 'object',\n      required: ['reviews'],\n      properties: {\n        reviews: {\n          type: 'array',\n          items: {\n            type: 'object',\n            required: ['review_id', 'sentiment', 'theme', 'is_bug_report'],\n            properties: {\n              review_id: { type: 'string' },\n              sentiment: { type: 'string', enum: ['positive', 'neutral', 'negative'] },\n              theme: { type: 'string' },\n              is_bug_report: { type: 'boolean' },\n              suggested_reply: { type: 'string' },\n            },\n          },\n        },\n      },\n    },\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "f6000000-0000-4000-8000-000000000009",
+      "name": "Tag reviews",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1660,
+        -120
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SgxyRPkD8HkhXQAn",
+          "mode": "list",
+          "cachedResultName": "[03] LLM call with schema and retries"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "f6000000-0000-4000-8000-00000000000a",
+      "name": "Route and compose",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1900,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Splits the batch into what gets stored and what gets alerted, and builds the message.\n// A review is alerted when it is rated 1 or 2, or when the model called it a bug report.\nconst llm = $input.first().json || {};\nconst batch = $('Build review request').first().json;\n\nconst esc = (s) => String(s)\n  .replace(/&/g, '&amp;')\n  .replace(/</g, '&lt;')\n  .replace(/>/g, '&gt;');\n\nconst tagged = llm.ok && llm.data && Array.isArray(llm.data.reviews) ? llm.data.reviews : [];\nconst byId = new Map(tagged.map((t) => [t.review_id, t]));\n\nconst rows = batch.items.map((r) => {\n  const t = byId.get(r.review_id) || {};\n  const isBug = Boolean(t.is_bug_report);\n  const alerted = r.rating <= 2 || isBug;\n  return {\n    review_id: r.review_id,\n    country: r.country,\n    rating: r.rating,\n    title: r.title,\n    body: r.body,\n    version: r.version,\n    reviewed_at: r.reviewed_at,\n    sentiment: t.sentiment || null,\n    theme: t.theme || null,\n    is_bug: isBug,\n    // A draft for a human. Nothing in this workflow sends it anywhere.\n    draft_reply: t.suggested_reply || null,\n    alerted,\n  };\n});\n\n// On the first run everything is only recorded, so an existing backlog does not turn\n// into a wall of alerts.\nconst alerts = batch.bootstrap ? [] : rows.filter((r) => r.alerted);\n\nconst parts = alerts.length\n  ? ['<b>App Store: ' + alerts.length + ' review' + (alerts.length > 1 ? 's' : '') + ' need attention</b>', '']\n  : [];\nfor (const a of alerts) {\n  parts.push('<b>' + a.rating + '/5</b> · ' + esc(a.country.toUpperCase())\n    + (a.version ? ' · v' + esc(a.version) : '') + (a.is_bug ? ' · <i>bug report</i>' : ''));\n  if (a.title) parts.push(esc(a.title));\n  parts.push(esc(a.body.slice(0, 300)));\n  if (a.theme) parts.push('theme: ' + esc(a.theme));\n  parts.push('');\n}\nif (alerts.length) parts.push('<i>Draft replies are stored, not sent.</i>');\n\nreturn [{\n  json: {\n    rows,\n    stored: rows.length,\n    alertCount: alerts.length,\n    bootstrap: batch.bootstrap,\n    degraded: !llm.ok,\n    chatId: batch.chatId,\n    storeUrl: batch.storeUrl,\n    text: parts.join('\\n').trim(),\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "f6000000-0000-4000-8000-00000000000b",
+      "name": "Store reviews",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2140,
+        -120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.storeUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rows) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "f6000000-0000-4000-8000-00000000000c",
+      "name": "Anything to alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2380,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "g6000000-0000-4000-8000-000000000002",
+              "leftValue": "={{ $('Route and compose').first().json.alertCount }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f6000000-0000-4000-8000-00000000000d",
+      "name": "Send alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2620,
+        -220
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Route and compose').first().json.chatId }}",
+        "text": "={{ $('Route and compose').first().json.text }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      }
+    },
+    {
+      "id": "f6000000-0000-4000-8000-00000000000e",
+      "name": "Stored, no alert",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2620,
+        -20
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Every 6 hours": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Fetch review feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch review feed": {
+      "main": [
+        [
+          {
+            "node": "Normalise reviews",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise reviews": {
+      "main": [
+        [
+          {
+            "node": "Drop already seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drop already seen": {
+      "main": [
+        [
+          {
+            "node": "Any new reviews?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any new reviews?": {
+      "main": [
+        [
+          {
+            "node": "Build review request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing to do",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build review request": {
+      "main": [
+        [
+          {
+            "node": "Tag reviews",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag reviews": {
+      "main": [
+        [
+          {
+            "node": "Route and compose",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route and compose": {
+      "main": [
+        [
+          {
+            "node": "Store reviews",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store reviews": {
+      "main": [
+        [
+          {
+            "node": "Anything to alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything to alert?": {
+      "main": [
+        [
+          {
+            "node": "Send alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stored, no alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "active": false
+}

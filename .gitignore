@@ -20,3 +20,4 @@ workflows/*
 !workflows/03-llm-structured
 !workflows/04-approval-gate
 !workflows/05-sources-digest
+!workflows/06-appstore-reviews

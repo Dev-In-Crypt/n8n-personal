@@ -1,0 +1,22 @@
+{
+  "feeds": [
+    {
+      "country": "us",
+      "feed": {
+        "entry": [
+          { "id": { "label": "app-metadata" }, "im:name": { "label": "Lunela" } },
+          { "id": { "label": "9001" }, "im:rating": { "label": "5" }, "title": { "label": "Lovely" }, "content": { "label": "My kid   sleeps <b>faster</b> now." }, "im:version": { "label": "1.4.0" }, "updated": { "label": "2026-09-08T20:00:00-07:00" } },
+          { "id": { "label": "9002" }, "im:rating": { "label": "1" }, "title": { "label": "Crashes & burns" }, "content": { "label": "Crashes on open every time." }, "im:version": { "label": "1.4.0" }, "updated": { "label": "2026-09-09T01:00:00-07:00" } },
+          { "id": { "label": "9003" }, "im:rating": { "label": "2" }, "title": { "label": "Too few stories" }, "content": { "label": "Ran out of content in a week." }, "im:version": { "label": "1.3.9" }, "updated": { "label": "2026-09-07T12:00:00-07:00" } }
+        ]
+      }
+    },
+    {
+      "country": "es",
+      "feed": {
+        "entry": { "id": { "label": "7001" }, "im:rating": { "label": "4" }, "title": { "label": "Bien" }, "content": { "label": "Funciona bien." }, "im:version": { "label": "1.4.0" }, "updated": { "label": "2026-09-08T09:00:00+02:00" } }
+      }
+    },
+    { "country": "gb", "feed": {} }
+  ]
+}
