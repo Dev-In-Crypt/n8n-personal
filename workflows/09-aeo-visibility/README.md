@@ -55,8 +55,7 @@ different model is ignored entirely, because a share is only comparable within o
 `validate_workflow` with the `strict` profile against a live instance: valid, zero
 errors.
 
-`tests/run.mjs` runs the three Code nodes against canned answers. Thirty-three checks,
-all green:
+`tests/run.mjs` runs the three Code nodes against canned answers. Thirty-three checks, all green:
 
 ```
 node tests/run.mjs
