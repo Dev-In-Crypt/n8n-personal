@@ -43,3 +43,4 @@ inactive and carry no credentials.
 | 10 | [RAG over the Obsidian vault](workflows/10-vault-rag) | ask your notes a question in Telegram, answered only from the notes |
 | 11 | [Rate-limited fetcher with cache](workflows/11-fetch-cache) | one place every other workflow goes through to reach the network: pacing, retries, page cache |
 | 12 | [LLM spend log and daily cap](workflows/12-llm-cost-guard) | records what every model call costs and refuses the next one once the day's cap is reached |
+| 13 | [Daily backup of the instance to git](workflows/13-wf-backup) | commits every workflow on the instance to a separate branch, and only when something changed |

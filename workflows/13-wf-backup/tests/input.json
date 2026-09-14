@@ -1,0 +1,33 @@
+{
+  "note": "A sample of what the n8n API hands the workflow. The suite builds its own fixtures; this is here so the shape is readable without running anything.",
+  "list": {
+    "data": [
+      { "id": "abc123", "name": "[05] Morning digest" },
+      { "id": "def456", "name": "[11] Rate-limited fetcher with cache" }
+    ]
+  },
+  "workflow": {
+    "id": "abc123",
+    "name": "[05] Morning digest",
+    "active": false,
+    "nodes": [
+      {
+        "id": "n1",
+        "name": "Read cache",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [0, 0],
+        "parameters": { "url": "https://example.com" },
+        "credentials": { "supabaseApi": { "id": "cred-77", "name": "Supabase (dev)" } }
+      }
+    ],
+    "connections": {},
+    "settings": { "executionOrder": "v1" },
+    "updatedAt": "2026-09-14T01:00:00.000Z",
+    "versionId": "v-999",
+    "triggerCount": 17,
+    "meta": { "instanceId": "inst-abc" },
+    "pinData": { "Read cache": [{ "json": { "captured": "run data" } }] },
+    "staticData": { "lastCursor": "abc" }
+  }
+}
