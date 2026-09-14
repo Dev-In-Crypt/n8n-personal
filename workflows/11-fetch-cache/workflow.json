@@ -1,0 +1,624 @@
+{
+  "name": "[11] Rate-limited fetcher with cache",
+  "nodes": [
+    {
+      "id": "c1100000-0000-4000-8000-000000000001",
+      "name": "When called by another workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-000000000002",
+      "name": "Prepare batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validates the request, keys the urls and builds the cache lookup.\n//\n// The pace is a constant here rather than a caller argument, because it is enforced by\n// the fetch node's batching settings, which are fixed configuration. A caller that could\n// ask for a rate the node does not honour would be lied to, so the parameter does not\n// exist. Change RATE_PER_SECOND and the batching options on \"Fetch pages\" together.\nconst SUPABASE_URL = '';        // TODO: https://<project>.supabase.co\nconst RATE_PER_SECOND = 3;      // must match batchSize on \"Fetch pages\"\nconst USER_AGENT = 'n8n-fetch-cache/1.0';\nconst MAX_URLS = 200;\nconst DEFAULT_TTL_HOURS = 24;\nconst DEFAULT_TIMEOUT_MS = 15000;\nconst MAX_CONTENT = 200000;\n\nif (!SUPABASE_URL) throw new Error('SUPABASE_URL is not configured in \"Prepare batch\"');\n\nconst input = $input.first().json || {};\nconst urls = Array.isArray(input.urls) ? input.urls : null;\nif (!urls) throw new Error('urls must be an array');\nif (!urls.length) throw new Error('urls is empty');\nif (urls.length > MAX_URLS) throw new Error('urls exceeds the cap of ' + MAX_URLS);\n\nconst ttlHours = input.ttl_hours === undefined ? DEFAULT_TTL_HOURS : Number(input.ttl_hours);\nif (!Number.isFinite(ttlHours) || ttlHours < 0) throw new Error('ttl_hours must be a number of 0 or more');\n\nconst timeoutMs = input.timeout_ms === undefined ? DEFAULT_TIMEOUT_MS : Number(input.timeout_ms);\nif (!Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000) {\n  throw new Error('timeout_ms must be between 1000 and 120000');\n}\n\n// The Code node sandbox exposes no hashing at all: no crypto global, and builtin module\n// imports are refused. Both were probed against a live instance, not assumed. So the key\n// is a base64url encoding of the url itself: longer than a digest, but deterministic and\n// collision-free, which is the only property a cache key needs. It stays this way even if\n// a future host offers a hash, because switching encodings would change every key at once\n// and silently empty the whole cache.\nconst keyOf = (s) => {\n  const bytes = new TextEncoder().encode(s);\n  const b64 = typeof Buffer !== 'undefined'\n    ? Buffer.from(bytes).toString('base64')\n    : btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(''));\n  return b64.replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');\n};\n\nconst seen = new Set();\nconst targets = [];\nfor (const raw of urls) {\n  const url = String(raw || '').trim();\n  if (!url) throw new Error('urls contains an empty entry');\n  if (!/^https?:\\/\\//i.test(url)) throw new Error('not an http url: ' + url.slice(0, 80));\n  if (seen.has(url)) continue;              // the same url twice in one call is one fetch\n  seen.add(url);\n  targets.push({ url, urlHash: keyOf(url) });\n}\n\nconst base = SUPABASE_URL.replace(/\\/+$/, '');\n\nreturn [{\n  json: {\n    targets,\n    requested: urls.length,\n    unique: targets.length,\n    ttlHours,\n    timeoutMs,\n    userAgent: USER_AGENT,\n    ratePerSecond: RATE_PER_SECOND,\n    maxContent: MAX_CONTENT,\n    // The lookup is an RPC taking the keys in the body, not a url_hash=in.(...) query\n    // string. Two hundred keys in a query string is tens of kilobytes of url, which\n    // servers and proxies truncate or reject; the body has no such limit.\n    cacheUrl: base + '/rest/v1/rpc/page_cache_lookup',\n    cacheKeys: targets.map((t) => t.urlHash),\n    storeUrl: base + '/rest/v1/page_cache',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-000000000003",
+      "name": "Read cache",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.cacheUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ keys: $json.cacheKeys }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "c1100000-0000-4000-8000-000000000004",
+      "name": "Split cache hits",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Splits the batch into cache hits and the urls that actually have to be fetched.\n// A ttl of 0 means \"never serve from cache\", which is how a caller forces a refresh\n// without needing a second code path.\nconst state = $('Prepare batch').first().json;\n\n// \"Read cache\" runs with fullResponse so that an empty cache still yields one item.\n// Without it PostgREST's [] would give the node zero items, n8n would skip every node\n// downstream, and the caller would get nothing back instead of a full set of misses.\nconst res = $input.first().json || {};\nconst rows = Array.isArray(res.body) ? res.body : Array.isArray(res) ? res : [];\nconst cached = rows.filter((r) => r && r.url_hash);\n\nconst byHash = new Map(cached.map((r) => [r.url_hash, r]));\nconst cutoff = Date.now() - state.ttlHours * 3600 * 1000;\n\nconst hits = [];\nconst pending = [];\nfor (const t of state.targets) {\n  const row = byHash.get(t.urlHash);\n  const fresh = row && state.ttlHours > 0 && Date.parse(row.fetched_at) >= cutoff;\n  if (fresh) {\n    hits.push({ url: t.url, status: row.status, from_cache: true, content: row.content });\n  } else {\n    pending.push({ url: t.url, urlHash: t.urlHash, attempt: 0 });\n  }\n}\n\nreturn [{\n  json: {\n    ...state,\n    hits,\n    pending,\n    // The accumulator travels with the item through the retry loop. Keeping it in the\n    // data rather than in workflow static data means a crashed run leaves nothing behind\n    // for the next one to inherit.\n    acc: { fetched: [], errors: [] },\n    hitCount: hits.length,\n    pendingCount: pending.length,\n    hasPending: pending.length > 0,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-000000000005",
+      "name": "Anything to fetch?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        940,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d1100000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.hasPending }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-000000000006",
+      "name": "Fan out misses",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// One item per url still to fetch. The loop re-enters here with a shorter pending list,\n// so this is the only place that turns the batch into individual requests.\nconst state = $input.first().json;\nconst pending = Array.isArray(state.pending) ? state.pending : [];\nif (!pending.length) return [];\n\nreturn pending.map((t, i) => ({\n  json: {\n    url: t.url,\n    urlHash: t.urlHash,\n    attempt: t.attempt || 0,\n    timeoutMs: state.timeoutMs,\n    userAgent: state.userAgent,\n    // Carried on the first item only: the classifier reads it back to continue the\n    // accumulation without duplicating it onto every request.\n    carry: i === 0 ? { acc: state.acc, hits: state.hits } : undefined,\n  },\n}));\n"
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-000000000007",
+      "name": "Fetch pages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1420,
+        -120
+      ],
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "={{ $json.userAgent }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $json.timeoutMs }}",
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 5
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 3,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "c1100000-0000-4000-8000-000000000008",
+      "name": "Classify responses",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Sorts responses into fetched, retryable and permanently failed.\n//\n// Only 429 and the transient 5xx family are retried. A 404 or a 500 means the server\n// answered and the answer will not change by asking again; retrying those is how one\n// broken url becomes a hundred wasted requests.\nconst RETRYABLE = new Set([429, 502, 503, 504]);\nconst MAX_ATTEMPTS = 3;\n\nconst state = $('Split cache hits').first().json;\nconst requests = $('Fan out misses').all().map((i) => i.json);\nconst responses = $input.all();\n\nconst carry = requests.length && requests[0].carry\n  ? requests[0].carry\n  : { acc: { fetched: [], errors: [] }, hits: state.hits };\n\nconst fetched = [...carry.acc.fetched];\nconst errors = [...carry.acc.errors];\nconst pending = [];\n\nfor (let i = 0; i < responses.length; i++) {\n  const req = requests[i];\n  if (!req) continue;\n  const res = responses[i].json || {};\n\n  // With neverError and fullResponse the node hands back the status instead of throwing.\n  const status = Number(res.statusCode ?? res.status ?? 0);\n  const headers = res.headers || {};\n  const body = res.body === undefined ? res.data : res.body;\n  const attempt = (req.attempt || 0) + 1;\n\n  if (!status) {\n    // No response at all: a timeout or a dns failure. Transient enough to retry.\n    if (attempt < MAX_ATTEMPTS) {\n      pending.push({ url: req.url, urlHash: req.urlHash, attempt, reason: 'no response' });\n    } else {\n      errors.push({ url: req.url, status: null, error: 'no response after ' + attempt + ' attempts' });\n    }\n    continue;\n  }\n\n  if (status >= 200 && status < 300) {\n    const content = typeof body === 'string' ? body : JSON.stringify(body ?? '');\n    fetched.push({\n      url: req.url,\n      urlHash: req.urlHash,\n      status,\n      content: content.slice(0, state.maxContent),\n      content_type: headers['content-type'] || null,\n    });\n    continue;\n  }\n\n  if (RETRYABLE.has(status) && attempt < MAX_ATTEMPTS) {\n    // Retry-After is the server telling us the pace. Ignoring it is how a 429 becomes a ban.\n    const ra = parseInt(headers['retry-after'], 10);\n    pending.push({\n      url: req.url, urlHash: req.urlHash, attempt,\n      reason: 'status ' + status,\n      retryAfter: Number.isFinite(ra) ? ra : null,\n    });\n    continue;\n  }\n\n  errors.push({\n    url: req.url,\n    status,\n    error: RETRYABLE.has(status) ? 'still ' + status + ' after ' + attempt + ' attempts' : 'http ' + status,\n  });\n}\n\n// The next pause: 2s, then 8s, then 30s. A server that asked for longer via Retry-After\n// wins, because it is the one with the rate limiter.\nconst attemptNow = pending.length ? Math.min(...pending.map((p) => p.attempt)) : 0;\nconst askedFor = pending.reduce((m, p) => Math.max(m, p.retryAfter || 0), 0);\n\nreturn [{\n  json: {\n    ...state,\n    hits: carry.hits,\n    acc: { fetched, errors },\n    pending,\n    hasPending: pending.length > 0,\n    attemptNow,\n    waitSeconds: Math.max(askedFor, attemptNow === 1 ? 2 : attemptNow === 2 ? 8 : 30),\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-000000000009",
+      "name": "Retry anything?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1900,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d1100000-0000-4000-8000-000000000002",
+              "leftValue": "={{ $json.hasPending }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-00000000000a",
+      "name": "Which pause?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        2140,
+        -240
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1100000-0000-4000-8000-000000000001",
+                    "leftValue": "={{ $json.waitSeconds }}",
+                    "rightValue": 2,
+                    "operator": {
+                      "type": "number",
+                      "operation": "lte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "short"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1100000-0000-4000-8000-000000000002",
+                    "leftValue": "={{ $json.waitSeconds }}",
+                    "rightValue": 8,
+                    "operator": {
+                      "type": "number",
+                      "operation": "lte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "medium"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "long"
+        }
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-00000000000b",
+      "name": "Wait 2 seconds",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2380,
+        -360
+      ],
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-00000000000c",
+      "name": "Wait 8 seconds",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2380,
+        -240
+      ],
+      "parameters": {
+        "amount": 8,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-00000000000d",
+      "name": "Wait 30 seconds",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2380,
+        -120
+      ],
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-00000000000e",
+      "name": "Build result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2140,
+        60
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Builds the one shape callers rely on, out of cache hits plus everything fetched across\n// all attempts plus the failures.\nconst state = $input.first().json;\nconst fetched = state.acc.fetched;\nconst errors = state.acc.errors;\n\nconst results = [\n  ...state.hits,\n  ...fetched.map((f) => ({ url: f.url, status: f.status, from_cache: false, content: f.content })),\n];\n\nreturn [{\n  json: {\n    results,\n    errors,\n    stats: {\n      requested: state.requested,\n      unique: state.unique,\n      from_cache: state.hits.length,\n      fetched: fetched.length,\n      failed: errors.length,\n      rate_per_second: state.ratePerSecond,\n    },\n    // Only successful responses are cached. A 404 stored for a day would be served as\n    // truth to every caller until it expired.\n    rows: fetched.map((f) => ({\n      url_hash: f.urlHash,\n      url: f.url,\n      status: f.status,\n      content: f.content,\n      content_type: f.content_type,\n      fetched_at: new Date().toISOString(),\n    })),\n    storeUrl: state.storeUrl,\n    hasRows: fetched.length > 0,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-00000000000f",
+      "name": "Anything to cache?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2380,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d1100000-0000-4000-8000-000000000003",
+              "leftValue": "={{ $json.hasRows }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c1100000-0000-4000-8000-000000000010",
+      "name": "Write cache",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2620,
+        -20
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.storeUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rows) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "c1100000-0000-4000-8000-000000000011",
+      "name": "Nothing fetched",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2620,
+        160
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "When called by another workflow": {
+      "main": [
+        [
+          {
+            "node": "Prepare batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare batch": {
+      "main": [
+        [
+          {
+            "node": "Read cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read cache": {
+      "main": [
+        [
+          {
+            "node": "Split cache hits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split cache hits": {
+      "main": [
+        [
+          {
+            "node": "Anything to fetch?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything to fetch?": {
+      "main": [
+        [
+          {
+            "node": "Fan out misses",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan out misses": {
+      "main": [
+        [
+          {
+            "node": "Fetch pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch pages": {
+      "main": [
+        [
+          {
+            "node": "Classify responses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify responses": {
+      "main": [
+        [
+          {
+            "node": "Retry anything?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry anything?": {
+      "main": [
+        [
+          {
+            "node": "Which pause?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Which pause?": {
+      "main": [
+        [
+          {
+            "node": "Wait 2 seconds",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 8 seconds",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 30 seconds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2 seconds": {
+      "main": [
+        [
+          {
+            "node": "Fan out misses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 8 seconds": {
+      "main": [
+        [
+          {
+            "node": "Fan out misses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 30 seconds": {
+      "main": [
+        [
+          {
+            "node": "Fan out misses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build result": {
+      "main": [
+        [
+          {
+            "node": "Anything to cache?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything to cache?": {
+      "main": [
+        [
+          {
+            "node": "Write cache",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing fetched",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "active": false
+}

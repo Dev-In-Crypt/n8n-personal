@@ -41,3 +41,5 @@ inactive and carry no credentials.
 | 08 | [Changelog to post drafts](workflows/08-changelog-to-posts) | turns releases into post drafts behind a human gate, never publishes |
 | 09 | [AI search visibility monitor](workflows/09-aeo-visibility) | weekly measure of whether a brand appears in model answers, with a delta |
 | 10 | [RAG over the Obsidian vault](workflows/10-vault-rag) | ask your notes a question in Telegram, answered only from the notes |
+| 11 | [Rate-limited fetcher with cache](workflows/11-fetch-cache) | one place every other workflow goes through to reach the network: pacing, retries, page cache |
+| 12 | [LLM spend log and daily cap](workflows/12-llm-cost-guard) | records what every model call costs and refuses the next one once the day's cap is reached |

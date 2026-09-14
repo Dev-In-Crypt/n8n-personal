@@ -1,0 +1,11 @@
+{
+  "urls": [
+    "https://example.com/a",
+    "https://example.com/b",
+    "https://example.com/a",
+    "https://example.com/missing",
+    "https://example.com/flaky"
+  ],
+  "ttl_hours": 24,
+  "timeout_ms": 15000
+}

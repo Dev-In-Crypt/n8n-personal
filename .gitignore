@@ -25,3 +25,5 @@ workflows/*
 !workflows/08-changelog-to-posts
 !workflows/09-aeo-visibility
 !workflows/10-vault-rag
+!workflows/11-fetch-cache
+!workflows/12-llm-cost-guard

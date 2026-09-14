@@ -1,0 +1,44 @@
+{
+  "day": 11,
+  "slug": "fetch-cache",
+  "category": "template",
+  "workflows": [
+    {
+      "file": "workflow.json",
+      "name": "[11] Rate-limited fetcher with cache",
+      "nodes": 17
+    }
+  ],
+  "calls": {},
+  "nodeVersions": {
+    "n8n-nodes-base.executeWorkflowTrigger": 1.2,
+    "n8n-nodes-base.code": 2,
+    "n8n-nodes-base.httpRequest": 4.4,
+    "n8n-nodes-base.if": 2.3,
+    "n8n-nodes-base.switch": 3.4,
+    "n8n-nodes-base.wait": 1.1,
+    "n8n-nodes-base.noOp": 1
+  },
+  "builtAt": "2026-09-13",
+  "validated": {
+    "profile": "strict",
+    "against": "live instance",
+    "errors": 0,
+    "warnings": 7,
+    "liveInstance": true,
+    "n8nVersion": "2.65.1"
+  },
+  "tests": {
+    "file": "tests/run.mjs",
+    "checks": 70,
+    "failures": 0
+  },
+  "codeHashes": {
+    "Prepare batch": "4477b59d39d3",
+    "Split cache hits": "ddb8b8bc8ab9",
+    "Fan out misses": "38591f2f46af",
+    "Classify responses": "b46f1fdeebcf",
+    "Build result": "d69adc80e8be"
+  },
+  "active": false
+}

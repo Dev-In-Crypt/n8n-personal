@@ -1,0 +1,516 @@
+{
+  "name": "[12a] LLM cost guard",
+  "nodes": [
+    {
+      "id": "d1200000-0000-4000-8000-000000000001",
+      "name": "When called by another workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "d1200000-0000-4000-8000-000000000002",
+      "name": "Prepare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validates the call and works out which of the two jobs this is.\n//\n// The mode is explicit when the caller sends one. When it does not, it is inferred from the\n// shape of the request - but an ambiguous request throws rather than guessing, because\n// guessing wrong here either records a cost that never happened or waves through a call\n// that should have been stopped.\nconst SUPABASE_URL = '';            // TODO: https://<project>.supabase.co\nconst ALERT_CHAT_ID = '';           // TODO: the Telegram chat that receives alerts\nconst TIMEZONE = 'Europe/Madrid';   // the budget day resets at local midnight, not UTC\nconst MAX_TOKENS = 10000000;\n\nif (!SUPABASE_URL) throw new Error('SUPABASE_URL is not configured in \"Prepare\"');\n// The alert is not optional decoration: a cap that refuses a call without telling anyone\n// looks exactly like a workflow that mysteriously stopped working.\nif (!ALERT_CHAT_ID) throw new Error('ALERT_CHAT_ID is not configured in \"Prepare\"');\n\nconst input = $input.first().json || {};\nconst hasUsage = input.usage !== undefined && input.usage !== null;\nconst hasEstimate = input.estimated_cost_usd !== undefined && input.estimated_cost_usd !== null;\n\nlet mode = input.mode;\nif (mode === undefined || mode === null || mode === '') {\n  if (hasUsage && !hasEstimate) mode = 'log';\n  else if (hasEstimate && !hasUsage) mode = 'check';\n  else if (hasUsage && hasEstimate) throw new Error('ambiguous request: send mode \"log\" or \"check\" explicitly');\n  else throw new Error('send either usage (to log) or estimated_cost_usd (to check)');\n}\nif (mode !== 'log' && mode !== 'check') {\n  throw new Error('mode must be \"log\" or \"check\", got ' + JSON.stringify(input.mode));\n}\n\nconst base = SUPABASE_URL.replace(/\\/+$/, '');\n\n// The day boundary is local. A UTC day would reset the budget at 01:00 or 02:00 local\n// time, which is neither what a daily limit means to a person nor what the report covers.\nconst dayStart = DateTime.now().setZone(TIMEZONE).startOf('day');\n\nconst out = {\n  mode,\n  timezone: TIMEZONE,\n  chatId: ALERT_CHAT_ID,\n  dayStart: dayStart.toISO(),\n  configUrl: base + '/rest/v1/llm_guard_config?select=daily_limit_usd&id=eq.1',\n  spendUrl: base + '/rest/v1/rpc/llm_spend_since',\n  usageUrl: base + '/rest/v1/llm_usage',\n  priceUrl: '',\n};\n\nconst count = (v, name) => {\n  const n = Number(v);\n  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0 || n > MAX_TOKENS) {\n    throw new Error(name + ' must be a whole number between 0 and ' + MAX_TOKENS + ', got ' + JSON.stringify(v));\n  }\n  return n;\n};\n\nif (mode === 'log') {\n  const workflowName = String(input.workflow_name || '').trim();\n  if (!workflowName) throw new Error('workflow_name is required to log');\n  const model = String(input.model || '').trim();\n  if (!model) throw new Error('model is required to log');\n\n  const usage = input.usage || {};\n  out.workflowName = workflowName;\n  out.model = model;\n  out.inputTokens = count(usage.input_tokens, 'input_tokens');\n  out.outputTokens = count(usage.output_tokens, 'output_tokens');\n  out.purpose = input.purpose === undefined || input.purpose === null\n    ? null\n    : String(input.purpose).slice(0, 500);\n  out.priceUrl = base + '/rest/v1/model_prices?select=model,in_per_mtok,out_per_mtok&model=eq.'\n    + encodeURIComponent(model);\n} else {\n  const est = Number(input.estimated_cost_usd);\n  if (!Number.isFinite(est) || est < 0) throw new Error('estimated_cost_usd must be a number of 0 or more');\n  out.estimated = est;\n}\n\nreturn [{ json: out }];\n"
+      }
+    },
+    {
+      "id": "d1200000-0000-4000-8000-000000000003",
+      "name": "Log or check?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1200000-0000-4000-8000-000000000001",
+                    "leftValue": "={{ $json.mode }}",
+                    "rightValue": "log",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "log"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "check"
+        }
+      }
+    },
+    {
+      "id": "d1200000-0000-4000-8000-000000000004",
+      "name": "Read price",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        700,
+        -160
+      ],
+      "parameters": {
+        "url": "={{ $json.priceUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "d1200000-0000-4000-8000-000000000005",
+      "name": "Price the call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        -160
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Turns tokens into money using the price list.\n//\n// An unknown model is recorded but not priced. The tokens are real and belong in the\n// ledger, but inventing a number for them would put a fiction into the total. So cost\n// stays at zero and priced is false, which is what makes the day's total a floor rather\n// than a guess - and the alert below is what stops that floor from going unnoticed.\nconst state = $('Prepare').first().json;\nconst res = $input.first().json || {};\nconst rows = Array.isArray(res.body) ? res.body : Array.isArray(res) ? res : [];\nconst price = rows.find((r) => r && r.model === state.model) || null;\n\nconst round6 = (n) => Math.round(n * 1e6) / 1e6;\n\nlet cost = 0;\nlet priced = false;\nif (price) {\n  const inRate = Number(price.in_per_mtok);\n  const outRate = Number(price.out_per_mtok);\n  if (!Number.isFinite(inRate) || !Number.isFinite(outRate) || inRate < 0 || outRate < 0) {\n    throw new Error('the model_prices row for ' + state.model + ' has a price that is not a number');\n  }\n  cost = round6((state.inputTokens / 1e6) * inRate + (state.outputTokens / 1e6) * outRate);\n  priced = true;\n}\n\nreturn [{\n  json: {\n    ...state,\n    cost,\n    priced,\n    row: {\n      workflow_name: state.workflowName,\n      model: state.model,\n      input_tokens: state.inputTokens,\n      output_tokens: state.outputTokens,\n      cost_usd: cost,\n      priced,\n      purpose: state.purpose,\n    },\n    alertText: priced ? null : [\n      'Unpriced model: ' + state.model,\n      'Logged by: ' + state.workflowName,\n      'Tokens: ' + state.inputTokens + ' in, ' + state.outputTokens + ' out',\n      'Recorded at zero cost, so the daily cap is blind to it. Add it to model_prices.',\n    ].join('\\n'),\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "d1200000-0000-4000-8000-000000000006",
+      "name": "Write usage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1180,
+        -160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.usageUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify([$json.row]) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "d1200000-0000-4000-8000-000000000007",
+      "name": "Priced?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1420,
+        -160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f1200000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $('Price the call').first().json.priced }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d1200000-0000-4000-8000-000000000008",
+      "name": "Alert unpriced model",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1660,
+        -60
+      ],
+      "parameters": {
+        "chatId": "={{ $('Price the call').first().json.chatId }}",
+        "text": "={{ $('Price the call').first().json.alertText }}",
+        "additionalFields": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "d1200000-0000-4000-8000-000000000009",
+      "name": "Log result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1900,
+        -160
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The caller gets back what was recorded, including whether it was actually priced.\n// A caller that believes a call was free when it was merely unpriced will keep going.\nconst state = $('Price the call').first().json;\n\nreturn [{\n  json: {\n    logged: true,\n    workflow_name: state.workflowName,\n    model: state.model,\n    input_tokens: state.inputTokens,\n    output_tokens: state.outputTokens,\n    cost_usd: state.cost,\n    priced: state.priced,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "d1200000-0000-4000-8000-00000000000a",
+      "name": "Read the cap",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        700,
+        160
+      ],
+      "parameters": {
+        "url": "={{ $json.configUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "d1200000-0000-4000-8000-00000000000b",
+      "name": "Read today",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        940,
+        160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Prepare').first().json.spendUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ since: $('Prepare').first().json.dayStart }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "d1200000-0000-4000-8000-00000000000c",
+      "name": "Decide",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        160
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Compares what has been spent today, plus what the caller is about to spend, against\n// the cap.\nconst state = $('Prepare').first().json;\n\nconst cfgRes = $('Read the cap').first().json || {};\nconst cfgRows = Array.isArray(cfgRes.body) ? cfgRes.body : Array.isArray(cfgRes) ? cfgRes : [];\nconst limit = Number(cfgRows[0] && cfgRows[0].daily_limit_usd);\n// A missing or unreadable cap must not read as \"no limit\". Throwing here refuses the call,\n// which is the safe direction: a blocked call is a nuisance, an unbounded bill is not.\nif (!Number.isFinite(limit) || limit < 0) {\n  throw new Error('daily_limit_usd could not be read from llm_guard_config; apply schema.sql');\n}\n\nconst spendRes = $input.first().json || {};\nconst spendRows = Array.isArray(spendRes.body) ? spendRes.body : Array.isArray(spendRes) ? spendRes : [];\nconst agg = spendRows[0] || {};\n// Number(null) is 0, so a null total would read as \"nothing spent today\" and wave through\n// a call that the real total might well have blocked. A total that is absent or null is a\n// broken answer, not a quiet day, and has to be treated as one.\nif (agg.total_usd === undefined || agg.total_usd === null) {\n  throw new Error('llm_spend_since did not return a usable total');\n}\nconst spent = Number(agg.total_usd);\nif (!Number.isFinite(spent) || spent < 0) {\n  throw new Error('llm_spend_since did not return a usable total');\n}\nconst unpriced = Number(agg.unpriced || 0);\n\nconst round6 = (n) => Math.round(n * 1e6) / 1e6;\nconst projected = round6(spent + state.estimated);\n// Exactly at the cap is allowed; the spec refuses what exceeds it.\nconst allowed = projected <= limit;\n\nreturn [{\n  json: {\n    ...state,\n    allowed,\n    spent: round6(spent),\n    projected,\n    limit,\n    unpriced,\n    calls: Number(agg.calls || 0),\n    alertText: allowed ? null : [\n      'Daily LLM cap reached.',\n      'Spent today: $' + round6(spent).toFixed(4),\n      'This call would add: $' + state.estimated.toFixed(4),\n      'Cap: $' + limit.toFixed(2),\n      unpriced > 0\n        ? unpriced + ' call(s) today used an unpriced model, so the real total is higher.'\n        : null,\n      'Refused. The caller was told to stop.',\n    ].filter(Boolean).join('\\n'),\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "d1200000-0000-4000-8000-00000000000d",
+      "name": "Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1420,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f1200000-0000-4000-8000-000000000002",
+              "leftValue": "={{ $json.allowed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d1200000-0000-4000-8000-00000000000e",
+      "name": "Alert cap reached",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1660,
+        260
+      ],
+      "parameters": {
+        "chatId": "={{ $('Decide').first().json.chatId }}",
+        "text": "={{ $('Decide').first().json.alertText }}",
+        "additionalFields": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "d1200000-0000-4000-8000-00000000000f",
+      "name": "Check result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1900,
+        160
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The verdict the caller is expected to obey. Nothing here can force it to.\nconst state = $('Decide').first().json;\n\nreturn [{\n  json: {\n    allowed: state.allowed,\n    spent_today: state.spent,\n    estimated: state.estimated,\n    projected: state.projected,\n    limit: state.limit,\n    currency: 'USD',\n    day_start: state.dayStart,\n    timezone: state.timezone,\n    calls_today: state.calls,\n    // Greater than zero means spent_today is a floor, not the truth: some of today's calls\n    // used a model with no price.\n    unpriced_today: state.unpriced,\n  },\n}];\n"
+      }
+    }
+  ],
+  "connections": {
+    "When called by another workflow": {
+      "main": [
+        [
+          {
+            "node": "Prepare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare": {
+      "main": [
+        [
+          {
+            "node": "Log or check?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log or check?": {
+      "main": [
+        [
+          {
+            "node": "Read price",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read the cap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read price": {
+      "main": [
+        [
+          {
+            "node": "Price the call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Price the call": {
+      "main": [
+        [
+          {
+            "node": "Write usage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write usage": {
+      "main": [
+        [
+          {
+            "node": "Priced?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Priced?": {
+      "main": [
+        [
+          {
+            "node": "Log result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert unpriced model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert unpriced model": {
+      "main": [
+        [
+          {
+            "node": "Log result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read the cap": {
+      "main": [
+        [
+          {
+            "node": "Read today",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read today": {
+      "main": [
+        [
+          {
+            "node": "Decide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide": {
+      "main": [
+        [
+          {
+            "node": "Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Check result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert cap reached",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert cap reached": {
+      "main": [
+        [
+          {
+            "node": "Check result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

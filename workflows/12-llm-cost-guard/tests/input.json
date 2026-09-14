@@ -1,0 +1,13 @@
+{
+  "log": {
+    "mode": "log",
+    "workflow_name": "[05] Morning digest of sources",
+    "model": "claude-haiku-4-5",
+    "usage": { "input_tokens": 1200, "output_tokens": 300 },
+    "purpose": "summarise the overnight items"
+  },
+  "check": {
+    "mode": "check",
+    "estimated_cost_usd": 0.05
+  }
+}
