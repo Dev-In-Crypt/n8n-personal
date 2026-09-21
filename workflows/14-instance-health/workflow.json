@@ -1,0 +1,416 @@
+{
+  "name": "[14] Weekly instance health report",
+  "nodes": [
+    {
+      "id": "j1400000-0000-4000-8000-000000000001",
+      "name": "Every Sunday at 20:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                0
+              ],
+              "triggerAtHour": 20,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "j1400000-0000-4000-8000-000000000002",
+      "name": "Prepare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Config and the reporting window.\nconst N8N_URL = 'http://localhost:5678';\nconst SUPABASE_URL = '';          // TODO: https://<project>.supabase.co\nconst ALERT_CHAT_ID = '';         // TODO: the Telegram chat that receives the report\nconst TIMEZONE = 'Europe/Madrid';\nconst REPORT_LANGUAGE = 'Russian';\nconst SUMMARY_MODEL = 'claude-haiku-4-5';\nconst ERROR_RATE_FLAG = 0.2;      // flag above 20% of runs failing\nconst SLOWDOWN_FACTOR = 2;        // flag when the median at least doubled\nconst SLOWDOWN_MIN_MS = 1000;     // ...and grew by at least a second\nconst PAGE_LIMIT = 250;\nconst MAX_PAGES = 40;             // 10,000 executions a week before the report says it is partial\n\nif (!SUPABASE_URL) throw new Error('SUPABASE_URL is not configured in \"Prepare\"');\nif (!ALERT_CHAT_ID) throw new Error('ALERT_CHAT_ID is not configured in \"Prepare\"');\n\nconst api = N8N_URL.replace(/\\/+$/, '') + '/api/v1';\nconst sb = SUPABASE_URL.replace(/\\/+$/, '') + '/rest/v1';\nconst until = DateTime.now().setZone(TIMEZONE);\nconst since = until.minus({ days: 7 });\n// The snapshot key is the Monday of the week the report runs in. Re-running the report in\n// the same week overwrites that week's row instead of adding a second one.\nconst weekStart = until.startOf('week').toISODate();\n\nreturn [{\n  json: {\n    timezone: TIMEZONE,\n    chatId: ALERT_CHAT_ID,\n    language: REPORT_LANGUAGE,\n    model: SUMMARY_MODEL,\n    errorRateFlag: ERROR_RATE_FLAG,\n    slowdownFactor: SLOWDOWN_FACTOR,\n    slowdownMinMs: SLOWDOWN_MIN_MS,\n    pageLimit: PAGE_LIMIT,\n    maxPages: MAX_PAGES,\n    since: since.toISO(),\n    until: until.toISO(),\n    weekStart,\n    workflowsUrl: api + '/workflows?limit=' + PAGE_LIMIT + '&excludePinnedData=true',\n    executionsUrl: api + '/executions?limit=' + PAGE_LIMIT + '&includeData=false',\n    // Strictly earlier than this week, so a re-run compares with last week and not with\n    // the snapshot it wrote an hour ago.\n    prevSnapshotUrl: sb + '/health_snapshots?select=week_start,stats&week_start=lt.' + weekStart\n      + '&order=week_start.desc&limit=1',\n    snapshotUrl: sb + '/health_snapshots',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "j1400000-0000-4000-8000-000000000003",
+      "name": "List workflows",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $json.workflowsUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "n8nApi",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "j1400000-0000-4000-8000-000000000004",
+      "name": "Read executions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $('Prepare').first().json.executionsUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "n8nApi",
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "cursor",
+                    "value": "={{ $response.body.nextCursor }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.nextCursor || ($response.body.data || []).some(e => Date.parse(e.startedAt) < Date.parse($('Prepare').first().json.since)) }}",
+              "limitPagesFetched": true,
+              "maxRequests": 40,
+              "requestInterval": 200
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "executeOnce": true
+    },
+    {
+      "id": "j1400000-0000-4000-8000-000000000005",
+      "name": "Read last snapshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $('Prepare').first().json.prevSnapshotUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "id": "j1400000-0000-4000-8000-000000000006",
+      "name": "Aggregate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Turns a week of executions into one line of numbers per workflow, and the flags.\nconst state = $('Prepare').first().json;\nconst since = Date.parse(state.since);\nconst until = Date.parse(state.until);\n\nconst listRes = $('List workflows').first().json || {};\nconst listBody = Array.isArray(listRes.data) ? listRes : (listRes.body || listRes);\nconst workflows = Array.isArray(listBody.data) ? listBody.data : [];\nconst listTruncated = !!listBody.nextCursor;\n\n// Each page of executions arrives as one item holding a data array. Loose executions are\n// accepted too, so the node does not depend on how n8n chose to split the response.\nconst execs = [];\nlet pages = 0;\nlet lastPageHadMore = false;\nfor (const item of $('Read executions').all()) {\n  const b = item.json || {};\n  if (Array.isArray(b.data)) {\n    pages += 1;\n    execs.push(...b.data);\n    lastPageHadMore = !!b.nextCursor;\n  } else if (b.workflowId !== undefined && b.startedAt !== undefined) {\n    execs.push(b);\n  }\n}\nconst oldestSeen = execs.reduce((m, e) => Math.min(m, Date.parse(e.startedAt) || Infinity), Infinity);\n// Stopped by the page cap while still inside the week: the numbers below are a subset,\n// and the report has to say so rather than present them as the whole week.\nconst executionsTruncated = pages >= state.maxPages && lastPageHadMore && oldestSeen >= since;\n\nlet prevStats = {};\nlet prevWeek = null;\ntry {\n  const r = $('Read last snapshot').first().json || {};\n  const rows = Array.isArray(r.body) ? r.body : Array.isArray(r) ? r : [];\n  if (rows[0] && rows[0].stats && typeof rows[0].stats === 'object') {\n    prevStats = rows[0].stats;\n    prevWeek = rows[0].week_start || null;\n  }\n} catch (e) {\n  // No snapshot read at all is the same as the first week: nothing to compare with.\n}\n\nconst ERROR = new Set(['error', 'crashed']);\nconst statusOf = (e) => e.status || (e.finished ? 'success' : (e.stoppedAt ? 'error' : 'running'));\n\nconst median = (xs) => {\n  if (!xs.length) return null;\n  const s = [...xs].sort((a, b) => a - b);\n  const m = Math.floor(s.length / 2);\n  return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);\n};\n\nconst byId = new Map();\nconst names = new Map(workflows.map((w) => [String(w.id), w.name]));\nconst active = new Map(workflows.map((w) => [String(w.id), !!w.active]));\nconst bucket = (id) => {\n  if (!byId.has(id)) byId.set(id, { runs: 0, errors: 0, canceled: 0, durations: [], lastSuccessAt: null });\n  return byId.get(id);\n};\n\nfor (const e of execs) {\n  const t = Date.parse(e.startedAt);\n  if (!Number.isFinite(t) || t < since || t >= until) continue;\n  const id = String(e.workflowId);\n  const b = bucket(id);\n  const status = statusOf(e);\n  b.runs += 1;\n  if (ERROR.has(status)) b.errors += 1;\n  if (status === 'canceled') b.canceled += 1;\n  const end = Date.parse(e.stoppedAt);\n  if (Number.isFinite(end) && end >= t && status !== 'running' && status !== 'waiting') {\n    b.durations.push(end - t);\n  }\n  if (status === 'success' && Number.isFinite(end)) {\n    if (!b.lastSuccessAt || end > Date.parse(b.lastSuccessAt)) b.lastSuccessAt = new Date(end).toISOString();\n  }\n}\n\n// Every active workflow gets a row even with zero runs: silence is exactly what this\n// report exists to catch. Inactive workflows are counted, not flagged - they are not\n// supposed to run, and flagging them every week would teach you to skip the report.\nfor (const w of workflows) if (w.active) bucket(String(w.id));\n\nconst rows = [];\nfor (const [id, b] of byId) {\n  const p50 = median(b.durations);\n  const prev = prevStats[id] || null;\n  const prevP50 = prev && Number.isFinite(Number(prev.p50Ms)) ? Number(prev.p50Ms) : null;\n  const errorRate = b.runs ? b.errors / b.runs : 0;\n  const flags = [];\n  if (active.get(id) && b.runs === 0) flags.push('never_ran_this_week');\n  if (b.runs > 0 && errorRate > state.errorRateFlag) flags.push('error_rate');\n  if (p50 !== null && prevP50 !== null && prevP50 > 0\n      && p50 >= prevP50 * state.slowdownFactor && p50 - prevP50 >= state.slowdownMinMs) {\n    flags.push('slowdown');\n  }\n  rows.push({\n    id,\n    name: names.get(id) || '(deleted workflow ' + id + ')',\n    active: !!active.get(id),\n    runs: b.runs,\n    errors: b.errors,\n    canceled: b.canceled,\n    errorRate: Math.round(errorRate * 1000) / 1000,\n    p50Ms: p50,\n    maxMs: b.durations.length ? Math.max(...b.durations) : null,\n    prevP50Ms: prevP50,\n    // A workflow that did not succeed this week keeps last week's date, so \"last success\"\n    // means the last one known, not the last one inside this window.\n    lastSuccessAt: b.lastSuccessAt || (prev && prev.lastSuccessAt) || null,\n    flags,\n  });\n}\n\n// Worst first: most flags, then the highest error rate, then the name for a stable order.\nrows.sort((a, b) => b.flags.length - a.flags.length || b.errorRate - a.errorRate || a.name.localeCompare(b.name));\n\nconst flagged = rows.filter((r) => r.flags.length);\nconst totals = {\n  runs: rows.reduce((s, r) => s + r.runs, 0),\n  errors: rows.reduce((s, r) => s + r.errors, 0),\n  workflowsRan: rows.filter((r) => r.runs > 0).length,\n  activeWorkflows: workflows.filter((w) => w.active).length,\n  inactiveWorkflows: workflows.filter((w) => !w.active).length,\n  flagged: flagged.length,\n};\n\nconst stats = {};\nfor (const r of rows) {\n  stats[r.id] = { name: r.name, runs: r.runs, errors: r.errors, p50Ms: r.p50Ms, maxMs: r.maxMs, lastSuccessAt: r.lastSuccessAt };\n}\n\nconst schema = {\n  type: 'object',\n  required: ['summary_ru', 'top_issues'],\n  properties: {\n    summary_ru: { type: 'string' },\n    top_issues: {\n      type: 'array',\n      items: {\n        type: 'object',\n        required: ['workflow', 'issue', 'suggested_check'],\n        properties: {\n          workflow: { type: 'string' },\n          issue: { type: 'string' },\n          suggested_check: { type: 'string' },\n        },\n      },\n    },\n  },\n};\n\nreturn [{\n  json: {\n    ...state,\n    rows,\n    flagged,\n    totals,\n    prevWeek,\n    hasFlags: flagged.length > 0,\n    truncated: { executions: executionsTruncated, workflows: listTruncated },\n    snapshot: {\n      week_start: state.weekStart,\n      // Explicit, because an upsert keeps the old default on a re-run.\n      taken_at: state.until,\n      window_since: state.since,\n      window_until: state.until,\n      totals,\n      stats,\n    },\n    // Only the flagged rows go to the model. It is asked to explain numbers, not to find\n    // problems of its own, and it never sees a workflow it could invent an issue about.\n    llmRequest: {\n      model: state.model,\n      max_retries: 1,\n      schema,\n      system: 'You review the weekly health numbers of an n8n instance for its owner. '\n        + 'Only discuss the workflows you are given, by their exact names. Do not invent '\n        + 'causes you cannot see in the numbers; say what to check instead. Write '\n        + 'summary_ru in ' + state.language + ', at most three sentences. Keep each issue '\n        + 'and suggested_check under 120 characters, also in ' + state.language + '.',\n      user: JSON.stringify({\n        window: { since: state.since, until: state.until },\n        totals,\n        flagged: flagged.map((r) => ({\n          workflow: r.name, flags: r.flags, runs: r.runs, errors: r.errors,\n          p50_ms: r.p50Ms, previous_p50_ms: r.prevP50Ms, last_success_at: r.lastSuccessAt,\n        })),\n      }),\n    },\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "j1400000-0000-4000-8000-000000000007",
+      "name": "Anything flagged?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1320,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1400000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.hasFlags }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "j1400000-0000-4000-8000-000000000008",
+      "name": "Build summary request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Hands workflow 03 exactly the request Aggregate prepared, and nothing else.\nreturn [{ json: $('Aggregate').first().json.llmRequest }];\n"
+      }
+    },
+    {
+      "id": "j1400000-0000-4000-8000-000000000009",
+      "name": "Ask for a summary",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1760,
+        -120
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SgxyRPkD8HkhXQAn",
+          "mode": "list",
+          "cachedResultName": "[03] LLM call with schema and retries"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "j1400000-0000-4000-8000-00000000000a",
+      "name": "Build report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Builds the Telegram message. The numbers are the report; the model's summary is an\n// addition that can be missing without taking the report down with it.\nconst TELEGRAM_LIMIT = 4096;\nconst SAFETY = 96;\nconst state = $('Aggregate').first().json;\n\nlet summary = null;\nlet issues = [];\nlet droppedIssues = 0;\nlet summaryFailed = false;\nif (state.hasFlags) {\n  try {\n    const r = $('Ask for a summary').first().json || {};\n    if (r.ok && r.data) {\n      summary = String(r.data.summary_ru || '').trim().slice(0, 700) || null;\n      // Issues are kept only when they name a workflow that was actually flagged. A model\n      // that invents a problem with a healthy workflow is worse than one that says nothing.\n      const known = new Set(state.flagged.map((f) => f.name));\n      for (const i of Array.isArray(r.data.top_issues) ? r.data.top_issues : []) {\n        if (i && known.has(i.workflow)) issues.push(i);\n        else droppedIssues += 1;\n      }\n    } else {\n      summaryFailed = true;\n    }\n  } catch (e) {\n    summaryFailed = true;\n  }\n}\n\nconst day = (iso) => DateTime.fromISO(iso).setZone(state.timezone).toFormat('d LLL');\nconst ms = (n) => (n === null || n === undefined ? '-' : n < 1000 ? n + 'ms' : (n / 1000).toFixed(1) + 's');\nconst pct = (x) => Math.round(x * 100) + '%';\nconst FLAG_TEXT = {\n  never_ran_this_week: 'did not run',\n  error_rate: 'high error rate',\n  slowdown: 'slowed down',\n};\n\nconst t = state.totals;\nconst head = [\n  'n8n health, ' + day(state.since) + ' - ' + day(state.until),\n  t.runs + ' runs, ' + t.errors + ' failed' + (t.runs ? ' (' + pct(t.errors / t.runs) + ')' : '')\n    + '. ' + t.workflowsRan + ' of ' + t.activeWorkflows + ' active workflows ran.',\n];\nif (state.truncated.executions) head.push('Partial: more executions than the page cap, counts are a subset.');\nif (state.truncated.workflows) head.push('Partial: more workflows than one page of the list.');\nif (!state.prevWeek) head.push('No earlier snapshot, so no week-on-week comparison yet.');\n\nconst body = [];\nif (!state.hasFlags) {\n  body.push('', 'Nothing flagged.');\n} else {\n  if (summary) body.push('', summary);\n  else if (summaryFailed) body.push('', 'Summary unavailable this week; the numbers below are complete.');\n  body.push('', 'Flagged:');\n  for (const r of state.flagged) {\n    const parts = r.flags.map((f) => FLAG_TEXT[f] || f);\n    const nums = r.runs\n      ? r.runs + ' runs, ' + pct(r.errorRate) + ' failed, median ' + ms(r.p50Ms)\n        + (r.flags.includes('slowdown') ? ' (was ' + ms(r.prevP50Ms) + ')' : '')\n      : 'last success ' + (r.lastSuccessAt ? day(r.lastSuccessAt) : 'unknown');\n    body.push('- ' + r.name + ': ' + parts.join(', ') + '. ' + nums);\n  }\n  if (issues.length) {\n    body.push('', 'What to check:');\n    for (const i of issues) body.push('- ' + i.workflow + ': ' + i.suggested_check);\n  }\n}\nconst tail = t.inactiveWorkflows ? ['', t.inactiveWorkflows + ' inactive workflows not checked.'] : [];\n\n// One message, always. Lines are added until the next one would not fit, and what is left\n// out is counted in the last line rather than silently dropped.\nconst budget = TELEGRAM_LIMIT - SAFETY;\nconst out = [...head];\nlet length = out.join('\\n').length + tail.join('\\n').length + 1;\nlet omitted = 0;\nfor (let i = 0; i < body.length; i++) {\n  const extra = body[i].length + 1;\n  if (length + extra > budget) { omitted = body.slice(i).filter((l) => l.startsWith('- ')).length; break; }\n  out.push(body[i]);\n  length += extra;\n}\nif (omitted) out.push('...and ' + omitted + ' more lines, see health_snapshots for the full week.');\nout.push(...tail);\nconst message = out.join('\\n');\n\nreturn [{\n  json: {\n    chatId: state.chatId,\n    snapshotUrl: state.snapshotUrl,\n    snapshot: state.snapshot,\n    message,\n    messageLength: message.length,\n    summaryUsed: !!summary,\n    summaryFailed,\n    droppedIssues,\n    omitted,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "j1400000-0000-4000-8000-00000000000b",
+      "name": "Save snapshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2200,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.snapshotUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify([$json.snapshot]) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "j1400000-0000-4000-8000-00000000000c",
+      "name": "Send report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2420,
+        0
+      ],
+      "parameters": {
+        "chatId": "={{ $('Build report').first().json.chatId }}",
+        "text": "={{ $('Build report').first().json.message }}",
+        "additionalFields": {}
+      }
+    }
+  ],
+  "connections": {
+    "Every Sunday at 20:00": {
+      "main": [
+        [
+          {
+            "node": "Prepare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare": {
+      "main": [
+        [
+          {
+            "node": "List workflows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List workflows": {
+      "main": [
+        [
+          {
+            "node": "Read executions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read executions": {
+      "main": [
+        [
+          {
+            "node": "Read last snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read last snapshot": {
+      "main": [
+        [
+          {
+            "node": "Aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate": {
+      "main": [
+        [
+          {
+            "node": "Anything flagged?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything flagged?": {
+      "main": [
+        [
+          {
+            "node": "Build summary request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build summary request": {
+      "main": [
+        [
+          {
+            "node": "Ask for a summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask for a summary": {
+      "main": [
+        [
+          {
+            "node": "Build report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build report": {
+      "main": [
+        [
+          {
+            "node": "Save snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save snapshot": {
+      "main": [
+        [
+          {
+            "node": "Send report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "active": false
+}

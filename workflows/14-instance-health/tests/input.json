@@ -1,0 +1,12 @@
+{
+  "note": "The suite builds its own fixtures. This is the shape of one page from GET /api/v1/executions, for reading without running anything.",
+  "page": {
+    "data": [
+      { "id": "1001", "workflowId": "abc123", "status": "success", "finished": true,
+        "startedAt": "2026-09-20T08:00:00.000Z", "stoppedAt": "2026-09-20T08:00:01.200Z" },
+      { "id": "1002", "workflowId": "abc123", "status": "error", "finished": false,
+        "startedAt": "2026-09-20T09:00:00.000Z", "stoppedAt": "2026-09-20T09:00:00.400Z" }
+    ],
+    "nextCursor": null
+  }
+}
