@@ -1,0 +1,11 @@
+{
+  "note": "The suite builds its own ten-email fixture. This is one message as the Gmail node returns it with Simplify off, for reading without running anything.",
+  "message": {
+    "id": "18c2f0a1b2c3d4e5",
+    "threadId": "18c2f0a1b2c3d4e5",
+    "from": { "text": "Ana <ana@client.es>", "value": [{ "address": "ana@client.es", "name": "Ana" }] },
+    "subject": "Invoice 2026-114 overdue",
+    "text": "Payment due Friday or we suspend the account.",
+    "labelIds": ["UNREAD", "INBOX"]
+  }
+}

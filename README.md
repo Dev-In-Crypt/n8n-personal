@@ -45,3 +45,4 @@ inactive and carry no credentials.
 | 12 | [LLM spend log and daily cap](workflows/12-llm-cost-guard) | records what every model call costs and refuses the next one once the day's cap is reached |
 | 13 | [Daily backup of the instance to git](workflows/13-wf-backup) | commits every workflow on the instance to a separate branch, and only when something changed |
 | 14 | [Weekly instance health report](workflows/14-instance-health) | every Sunday: what ran, what failed, what slowed down, and what should have run and did not |
+| 15 | [Inbox triage into tasks](workflows/15-inbox-triage) | unread mail that needs doing becomes a task; urgent mail pings Telegram; the rest is left untouched |
