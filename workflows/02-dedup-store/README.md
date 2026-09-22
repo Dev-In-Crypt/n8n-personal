@@ -84,3 +84,24 @@ URL, the missing key field throwing, and the 200 character preview cap.
   a maintenance workflow; the dedup path stays a pure read plus insert.
 - `payload_preview` is `JSON.stringify(item)` truncated to 200 characters, meant for
   eyeballing rows, not for reconstructing the item.
+
+## Fix, 22 September 2026
+
+Two defects found while building workflow 15, both invisible to strict validation because
+it never runs the code:
+
+1. **"Build keys" called `crypto.subtle`, which this instance's Code node sandbox does not
+   have.** A probe run during workflow 11 showed `crypto is not defined` and builtin module
+   imports refused, so this node threw on its first line. It now computes SHA-256 in plain
+   JavaScript. The output is byte-identical: checked against Node's `createHash` on 309
+   inputs including the 55, 56 and 64-byte padding boundaries and multibyte text, and
+   inside the live sandbox itself. Keys already stored stay valid.
+2. **An all-new batch was silently dropped.** When none of the batch had been seen,
+   PostgREST answered `[]`, n8n turned that into zero items, and "Diff against seen" never
+   ran, so the caller got nothing back. "Fetch seen hashes" now carries
+   `alwaysOutputData`.
+
+The test suite used to install Node's `crypto` as a global before running the node code,
+which is how the first defect passed every check. It no longer does, and it now fails if
+any Code node calls into `crypto`, compares hashes against a reference implementation,
+and covers the empty answer.

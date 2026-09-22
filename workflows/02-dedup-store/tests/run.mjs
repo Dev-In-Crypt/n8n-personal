@@ -1,9 +1,11 @@
 // Runs the "Build keys" and "Diff against seen" node logic outside n8n. The code is
 // read straight out of workflow.json; n8n globals are stubbed. Run: node tests/run.mjs
 import { readFileSync } from 'node:fs';
-import { webcrypto } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
-if (!globalThis.crypto) globalThis.crypto = webcrypto;
+// No crypto is installed for the node code. The live Code node sandbox has none, and an
+// earlier version of this suite supplied it here, which is how a workflow that throws on
+// its first line passed every check. createHash is used only to check the answers.
 
 const wf = JSON.parse(readFileSync(new URL('../workflow.json', import.meta.url), 'utf8'));
 const codeOf = (name) => wf.nodes.find((n) => n.name === name).parameters.jsCode;
@@ -18,7 +20,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 const buildKeys = (payload) => {
   const $input = { first: () => ({ json: payload }) };
-  return new AsyncFunction('$input', buildCode)($input).then((r) => r[0].json);
+  return new AsyncFunction('$input', 'crypto', buildCode)($input, undefined).then((r) => r[0].json);
 };
 const diff = (built, seenHashes) => {
   const $input = { all: () => seenHashes.map((h) => ({ json: { hash: h } })) };
@@ -90,6 +92,27 @@ const long = { source: 'digest', key_field: 'url',
   items: [{ url: 'https://example.com/x', body: 'y'.repeat(2000) }] };
 const builtLong = await buildKeys(long);
 check('preview capped at 200', builtLong.keys[0].preview.length === 200, builtLong.keys[0].preview.length);
+
+console.log('Runs without crypto, as the live sandbox does');
+const expect = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
+check('hash matches sha256 of source:key exactly',
+  built1.keys[0].hash === expect(built1.source + ':' + built1.keys[0].value), built1.keys[0].hash);
+const odd = await buildKeys({ source: 'gmail', key_field: 'id',
+  items: [{ id: '<CAF=abc@mail.gmail.com>' }, { id: 'ünïcødé ✓' }, { id: 'x'.repeat(56) }] });
+check('multibyte and padding-boundary keys hash correctly',
+  odd.keys.every((k) => k.hash === expect('gmail:' + k.value)), odd.keys.map((k) => k.hash.slice(0, 8)));
+check('no Code node calls into crypto',
+  wf.nodes.every((n) => !/\bcrypto\s*\./.test((n.parameters && n.parameters.jsCode) || '')), true);
+
+console.log('An all-new batch against an empty answer');
+const emptyItem = (() => {
+  const $input = { all: () => [{ json: {} }] };
+  const $ = () => ({ first: () => ({ json: built1 }) });
+  return new Function('$input', '$', diffCode)($input, $)[0].json;
+})();
+check('one empty item from the fetch is not mistaken for a seen hash', emptyItem.new_items.length === 5, emptyItem.new_items.length);
+check('the fetch node always emits an item, so an all-new batch is not dropped',
+  wf.nodes.find((n) => n.name === 'Fetch seen hashes').alwaysOutputData === true, false);
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\nFAILED CHECKS: ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

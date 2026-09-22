@@ -1,9 +1,8 @@
 // Runs the gate's logic outside n8n. Node code is read from workflow.json; the Telegram
 // wait is replaced by canned resume payloads. Run: node tests/run.mjs
 import { readFileSync } from 'node:fs';
-import { webcrypto } from 'node:crypto';
-
-if (!globalThis.crypto) globalThis.crypto = webcrypto;
+// No crypto is installed for the node code: the live Code node sandbox has none, and an
+// earlier version of this suite supplied it, which hid a call to crypto.randomUUID().
 
 const wf = JSON.parse(readFileSync(new URL('../workflow.json', import.meta.url), 'utf8'));
 const codeOf = (name) => wf.nodes.find((n) => n.name === name).parameters.jsCode;
@@ -13,7 +12,7 @@ const prepareCode = codeOf('Prepare request')
 
 const prepare = (payload) => {
   const $input = { first: () => ({ json: payload }) };
-  return new Function('$input', prepareCode)($input)[0].json;
+  return new Function('$input', 'crypto', prepareCode)($input, undefined)[0].json;
 };
 const record = (state, resume) => {
   const $input = { first: () => ({ json: resume }) };
@@ -91,6 +90,14 @@ check('chat id required', throws(() => prepare({ ...clone(base), chat_id: '' }),
 check('timeout upper bound', throws(() => prepare({ ...clone(base), timeout_hours: 500 }), /between 0 and 168/), true);
 check('timeout must be positive', throws(() => prepare({ ...clone(base), timeout_hours: 0 }), /between 0 and 168/), true);
 check('timeout defaults to 24', prepare({ ...clone(base), timeout_hours: undefined }).timeoutHours === 24, true);
+
+console.log('Runs without crypto, as the live sandbox does');
+const ids = Array.from({ length: 2000 }, () => prepare(clone(base)).requestId);
+check('request id is a version 4 uuid',
+  ids.every((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)), ids[0]);
+check('2000 request ids are all distinct', new Set(ids).size === ids.length, new Set(ids).size);
+check('no Code node calls into crypto',
+  wf.nodes.every((n) => !/\bcrypto\s*\./.test((n.parameters && n.parameters.jsCode) || '')), true);
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\nFAILED CHECKS: ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

@@ -103,3 +103,15 @@ and every input validation branch.
   executions, which matters if you keep many gates open at once.
 - The gate does not check who pressed the button. Anyone with access to the chat can
   decide; restrict the chat, not the workflow.
+
+## Fix, 22 September 2026
+
+"Prepare request" called `crypto.randomUUID()`, which this instance's Code node sandbox
+does not have, so the gate threw before asking anything. Found while building workflow 15;
+strict validation cannot catch it because it never runs the code. The id is now a version
+4 UUID built from `Math.random`. It is a row key, not an access token: the reply resumes
+the execution through n8n's own signed wait url. A test generates 2000 ids and checks the
+format and that they are distinct.
+
+The test suite used to install Node's `crypto` as a global, which is how this passed. It
+no longer does, and it fails if any Code node calls into `crypto`.
