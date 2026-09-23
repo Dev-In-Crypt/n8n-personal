@@ -1,0 +1,13 @@
+{
+  "note": "The suite builds its own fixtures. This is a Telegram update as the trigger emits it, and the transcription response shape, for reading without running anything.",
+  "update": {
+    "update_id": 900001,
+    "message": {
+      "message_id": 4242,
+      "chat": { "id": 777, "type": "private" },
+      "date": 1790000000,
+      "voice": { "file_id": "AwACAgIAAxkBAAI", "duration": 42, "mime_type": "audio/ogg" }
+    }
+  },
+  "transcription": { "text": "Emm so the idea is, you know, to let the bot file notes." }
+}

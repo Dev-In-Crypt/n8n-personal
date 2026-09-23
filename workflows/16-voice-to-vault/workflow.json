@@ -1,0 +1,560 @@
+{
+  "name": "[16] Telegram voice notes into Obsidian",
+  "nodes": [
+    {
+      "id": "p1600000-0000-4000-8000-000000000001",
+      "name": "Voice note received",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      }
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000002",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Everything a human sets, in one place.\nconst VAULT_PATH = '';              // TODO: the vault folder as n8n sees it, e.g. /data/vault\nconst ALLOWED_CHAT_IDS = [];        // TODO: ['123456789'] - only these chats are answered\nconst SUPABASE_URL = '';            // TODO: https://<project>.supabase.co\nconst INBOX_FOLDER = 'Inbox';\nconst TIMEZONE = 'Europe/Madrid';\nconst MODEL = 'claude-haiku-4-5';\nconst TRANSCRIBE_MODEL = 'whisper-1';\nconst MAX_SECONDS = 600;            // a ten minute cap, so one long recording cannot run away\nconst MAX_TAGS = 6;\n\nif (!VAULT_PATH) throw new Error('VAULT_PATH is not configured in \"Config\"');\nif (!ALLOWED_CHAT_IDS.length) throw new Error('ALLOWED_CHAT_IDS is empty in \"Config\"');\nif (!SUPABASE_URL) throw new Error('SUPABASE_URL is not configured in \"Config\"');\n\nreturn [{\n  json: {\n    vaultPath: VAULT_PATH.replace(/\\/+$/, ''),\n    inboxFolder: INBOX_FOLDER,\n    allowedChatIds: ALLOWED_CHAT_IDS.map(String),\n    timezone: TIMEZONE,\n    model: MODEL,\n    transcribeModel: TRANSCRIBE_MODEL,\n    maxSeconds: MAX_SECONDS,\n    maxTags: MAX_TAGS,\n    transcribeUrl: 'https://api.openai.com/v1/audio/transcriptions',\n    tasksUrl: SUPABASE_URL.replace(/\\/+$/, '') + '/rest/v1/tasks?on_conflict=source_url',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000003",
+      "name": "Inspect the message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Decides whether this update is something to act on at all.\n//\n// The allow list is checked here, before anything is downloaded, transcribed or paid for.\n// A message from any other chat leaves without a reply: answering would confirm the bot\n// exists to whoever found it.\nconst cfg = $('Config').first().json;\nconst update = $input.first().json || {};\nconst msg = update.message || update.channel_post || update;\nconst chat = msg.chat || {};\nconst media = msg.voice || msg.audio || null;\n\nconst chatId = chat.id === undefined || chat.id === null ? '' : String(chat.id);\nconst allowed = cfg.allowedChatIds.includes(chatId);\nconst hasAudio = !!(media && media.file_id);\nconst duration = Number(media && media.duration) || 0;\nconst tooLong = duration > cfg.maxSeconds;\n\nreturn [{\n  json: {\n    chatId,\n    messageId: msg.message_id === undefined ? null : msg.message_id,\n    allowed,\n    hasAudio,\n    duration,\n    tooLong,\n    // Only an allowed chat is ever answered, and only about audio it actually sent.\n    shouldTranscribe: allowed && hasAudio && !tooLong,\n    shouldRefuse: allowed && hasAudio && tooLong,\n    fileId: hasAudio ? media.file_id : null,\n    mimeType: (media && media.mime_type) || 'audio/ogg',\n    refusal: 'That recording is ' + duration + ' seconds, over the ' + cfg.maxSeconds\n      + ' second limit. Send it in shorter pieces and I will file each one.',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000004",
+      "name": "Transcribe it?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        600,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "q1600000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.shouldTranscribe }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000005",
+      "name": "Download the audio",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        800,
+        -120
+      ],
+      "parameters": {
+        "resource": "file",
+        "operation": "get",
+        "fileId": "={{ $json.fileId }}",
+        "download": true
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000006",
+      "name": "Transcribe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1000,
+        -120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.transcribeUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "model",
+              "value": "={{ $('Config').first().json.transcribeModel }}"
+            },
+            {
+              "name": "response_format",
+              "value": "json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000007",
+      "name": "Build the request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The transcript goes to workflow 03 to be turned into a note.\nconst cfg = $('Config').first().json;\nconst res = $input.first().json || {};\nconst text = String(res.text || '').trim();\nif (!text) throw new Error('the transcription came back empty');\n\nconst schema = {\n  type: 'object',\n  required: ['title', 'cleaned_text', 'tags', 'type', 'related_project'],\n  properties: {\n    title: { type: 'string' },\n    cleaned_text: { type: 'string' },\n    tags: { type: 'array', items: { type: 'string' } },\n    type: { type: 'string', enum: ['idea', 'task', 'note', 'log'] },\n    related_project: { type: 'string' },\n  },\n};\n\nreturn [{\n  json: {\n    model: cfg.model,\n    max_retries: 1,\n    schema,\n    // Tidy, not retell. A summary would lose the thought the recording was made to keep.\n    system: 'You file a spoken note for its author. Clean the transcript: drop fillers, '\n      + 'false starts and repetitions, fix obvious speech-to-text errors, and keep '\n      + 'everything else - the wording, the order, the details. Do not summarise, shorten '\n      + 'or rephrase the substance. Write cleaned_text in the language that was spoken. '\n      + 'title is a short noun phrase, at most 70 characters, no quotes or colons. tags are '\n      + 'lowercase single words or hyphenated, at most ' + cfg.maxTags + '. type is task '\n      + 'only when the author is telling themselves to do something. related_project is a '\n      + 'name the author said, or \"\" when none was mentioned.',\n    user: JSON.stringify({ transcript: text }),\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000008",
+      "name": "Structure the note",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1400,
+        -120
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SgxyRPkD8HkhXQAn",
+          "mode": "list",
+          "cachedResultName": "[03] LLM call with schema and retries"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000009",
+      "name": "Build the note",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Builds the markdown file, its path, and the reply.\nconst cfg = $('Config').first().json;\nconst inspected = $('Inspect the message').first().json;\nconst transcript = String($('Transcribe').first().json.text || '').trim();\nconst answer = $input.first().json || {};\nif (!answer.ok || !answer.data) {\n  throw new Error('the note could not be structured: ' + JSON.stringify(answer.errors || []).slice(0, 200));\n}\nconst d = answer.data;\n\nconst oneLine = (s, n) => String(s == null ? '' : s).replace(/\\s+/g, ' ').trim().slice(0, n);\nconst title = oneLine(d.title, 70) || 'Voice note';\nconst project = oneLine(d.related_project, 60);\nconst type = ['idea', 'task', 'note', 'log'].includes(d.type) ? d.type : 'note';\n\nconst tags = [...new Set((Array.isArray(d.tags) ? d.tags : [])\n  .map((t) => String(t).toLowerCase().replace(/[^a-z0-9\\u0400-\\u04ff-]+/gi, '-').replace(/^-+|-+$/g, ''))\n  .filter(Boolean))].slice(0, cfg.maxTags);\n\nconst slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'note';\nconst now = DateTime.now().setZone(cfg.timezone);\n// The message id is in the filename on purpose. Two notes dictated in the same minute\n// would otherwise land on the same path and the second would overwrite the first.\nconst fileName = now.toFormat('yyyy-LL-dd-HHmm') + '-' + slug + '-' + inspected.messageId + '.md';\nconst path = cfg.vaultPath + '/' + cfg.inboxFolder + '/' + fileName;\n\n// Quoted and escaped: a title with a colon or a quote in it would otherwise produce\n// frontmatter that Obsidian cannot parse.\nconst yaml = (s) => '\"' + String(s).replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"') + '\"';\n\nconst frontmatter = [\n  '---',\n  'created: ' + now.toISO(),\n  'source: voice',\n  'type: ' + type,\n  'title: ' + yaml(title),\n  'tags: [' + tags.join(', ') + ']',\n  'project: ' + (project ? yaml(project) : '\"\"'),\n  'duration_seconds: ' + inspected.duration,\n  '---',\n].join('\\n');\n\n// The raw transcript is kept, folded, under the cleaned text. The cleaning is a judgement\n// call by a model, and the only way to check it later is to still have the original.\nconst raw = transcript.split('\\n').map((l) => '> ' + l).join('\\n');\nconst markdown = [\n  frontmatter,\n  '',\n  '# ' + title,\n  '',\n  String(d.cleaned_text || '').trim(),\n  '',\n  '> [!quote]- Raw transcript',\n  raw,\n  '',\n].join('\\n');\n\nreturn [{\n  json: {\n    markdown,\n    path,\n    fileName,\n    title,\n    type,\n    tags,\n    project: project || null,\n    isTask: type === 'task',\n    chatId: inspected.chatId,\n    task: type === 'task' ? {\n      source: 'voice',\n      // The note itself is the task's identity, so re-filing the same note cannot create\n      // a second row.\n      source_url: path,\n      action: oneLine(title, 200),\n      urgency: 'normal',\n      deadline_hint: null,\n      category: project ? oneLine(project, 40) : 'voice',\n      context: oneLine(d.cleaned_text, 200) || null,\n      status: 'open',\n    } : null,\n    reply: 'Filed: ' + title + '\\n' + path + (type === 'task' ? '\\nAlso added to tasks.' : ''),\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000010",
+      "name": "Markdown to file",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1800,
+        -120
+      ],
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "markdown",
+        "options": {
+          "encoding": "utf8",
+          "fileName": "={{ $json.fileName }}"
+        }
+      }
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000011",
+      "name": "Write the note",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        2000,
+        -120
+      ],
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('Build the note').first().json.path }}",
+        "dataPropertyName": "data",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000012",
+      "name": "Is it a task?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2200,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "q1600000-0000-4000-8000-000000000002",
+              "leftValue": "={{ $('Build the note').first().json.isTask }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000013",
+      "name": "Save the task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2400,
+        -220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.tasksUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify([$('Build the note').first().json.task]) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000014",
+      "name": "Confirm in Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2600,
+        -120
+      ],
+      "parameters": {
+        "chatId": "={{ $('Build the note').first().json.chatId }}",
+        "text": "={{ $('Build the note').first().json.reply }}",
+        "additionalFields": {}
+      }
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000015",
+      "name": "Too long to file?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        800,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "q1600000-0000-4000-8000-000000000003",
+              "leftValue": "={{ $json.shouldRefuse }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000016",
+      "name": "Say it is too long",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1000,
+        60
+      ],
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.refusal }}",
+        "additionalFields": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "p1600000-0000-4000-8000-000000000017",
+      "name": "Nothing to do",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        200
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Voice note received": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Inspect the message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download the audio": {
+      "main": [
+        [
+          {
+            "node": "Transcribe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe": {
+      "main": [
+        [
+          {
+            "node": "Build the request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build the request": {
+      "main": [
+        [
+          {
+            "node": "Structure the note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structure the note": {
+      "main": [
+        [
+          {
+            "node": "Build the note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build the note": {
+      "main": [
+        [
+          {
+            "node": "Markdown to file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Markdown to file": {
+      "main": [
+        [
+          {
+            "node": "Write the note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write the note": {
+      "main": [
+        [
+          {
+            "node": "Is it a task?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save the task": {
+      "main": [
+        [
+          {
+            "node": "Confirm in Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inspect the message": {
+      "main": [
+        [
+          {
+            "node": "Transcribe it?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe it?": {
+      "main": [
+        [
+          {
+            "node": "Download the audio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Too long to file?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Too long to file?": {
+      "main": [
+        [
+          {
+            "node": "Say it is too long",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing to do",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is it a task?": {
+      "main": [
+        [
+          {
+            "node": "Save the task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Confirm in Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "active": false
+}

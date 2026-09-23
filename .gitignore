@@ -30,6 +30,7 @@ workflows/*
 !workflows/13-wf-backup
 !workflows/14-instance-health
 !workflows/15-inbox-triage
+!workflows/16-voice-to-vault
 
 # Placeholders the spec stubs left in empty test folders.
 .gitkeep

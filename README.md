@@ -46,3 +46,4 @@ inactive and carry no credentials.
 | 13 | [Daily backup of the instance to git](workflows/13-wf-backup) | commits every workflow on the instance to a separate branch, and only when something changed |
 | 14 | [Weekly instance health report](workflows/14-instance-health) | every Sunday: what ran, what failed, what slowed down, and what should have run and did not |
 | 15 | [Inbox triage into tasks](workflows/15-inbox-triage) | unread mail that needs doing becomes a task; urgent mail pings Telegram; the rest is left untouched |
+| 16 | [Telegram voice notes into Obsidian](workflows/16-voice-to-vault) | dictate a note; it is transcribed, cleaned, filed in the vault with the raw transcript kept, and added to tasks when it is one |
