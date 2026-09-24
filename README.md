@@ -47,3 +47,4 @@ inactive and carry no credentials.
 | 14 | [Weekly instance health report](workflows/14-instance-health) | every Sunday: what ran, what failed, what slowed down, and what should have run and did not |
 | 15 | [Inbox triage into tasks](workflows/15-inbox-triage) | unread mail that needs doing becomes a task; urgent mail pings Telegram; the rest is left untouched |
 | 16 | [Telegram voice notes into Obsidian](workflows/16-voice-to-vault) | dictate a note; it is transcribed, cleaned, filed in the vault with the raw transcript kept, and added to tasks when it is one |
+| 17 | [Competitor page change monitor](workflows/17-competitor-diff) | reads competitor pages every morning and reports what changed, with the old and the new line, not that something changed |

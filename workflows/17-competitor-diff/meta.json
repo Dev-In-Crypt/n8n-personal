@@ -1,0 +1,61 @@
+{
+  "day": 17,
+  "slug": "competitor-diff",
+  "category": "product",
+  "workflows": [
+    {
+      "file": "workflow.json",
+      "name": "[17] Competitor page change monitor",
+      "nodes": 29
+    }
+  ],
+  "calls": {
+    "11": "rate-limited fetcher with cache",
+    "12a": "LLM cost guard, check and log",
+    "03": "LLM call with schema and retries"
+  },
+  "tables": [
+    "competitor_pages",
+    "page_snapshots"
+  ],
+  "nodeVersions": {
+    "n8n-nodes-base.scheduleTrigger": 1.3,
+    "n8n-nodes-base.code": 2,
+    "n8n-nodes-base.httpRequest": 4.4,
+    "n8n-nodes-base.executeWorkflow": 1.3,
+    "n8n-nodes-base.html": 1.2,
+    "n8n-nodes-base.if": 2.3,
+    "n8n-nodes-base.telegram": 1.2,
+    "n8n-nodes-base.googleSheets": 4.7,
+    "n8n-nodes-base.noOp": 1
+  },
+  "builtAt": "2026-09-24",
+  "validated": {
+    "id": "nGZJN72kgQmNlztF",
+    "profile": "strict",
+    "errors": 0,
+    "warnings": 19,
+    "date": "2026-09-24"
+  },
+  "tests": {
+    "file": "tests/run.mjs",
+    "checks": 63,
+    "failures": 0,
+    "requires": [
+      "luxon"
+    ]
+  },
+  "codeHashes": {
+    "Config": "3d8050ee924a",
+    "Prepare the batch": "1075e3940ccc",
+    "Fan out pages": "0f205dd3f363",
+    "Detect changes": "fc029e0e9590",
+    "Build the budget check": "f228d0e7c4ed",
+    "One request per change": "993b3f90bfc4",
+    "Collect verdicts": "d58c7e96f4d6",
+    "Build the spend log": "26da08d68d05",
+    "One message per alert": "28f993a2e671",
+    "One row per change": "4354194db673"
+  },
+  "active": false
+}
