@@ -159,6 +159,8 @@ await check('an empty answer from the lookup is not mistaken for a seen id', asy
 console.log('\nThe classification request');
 const p1 = await pipeline(mail);
 await check('one request per email', () => eq(p1.reqs.length, 10, 'requests'));
+await check('workflow 03 is told not to log this call twice',
+  () => ok(p1.reqs.every((r) => r.log_spend === false), 'log_spend: ' + p1.reqs[0].log_spend));
 await check('the model sees from, subject and body and nothing else', () => {
   eq(Object.keys(JSON.parse(p1.reqs[0].user)).sort(), ['body', 'from', 'subject'], 'fields');
 });

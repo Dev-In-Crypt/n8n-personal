@@ -119,13 +119,16 @@ node tests/run.mjs
 ## Definition of done
 
 - [x] the price list lives in a table, not in a node's code
-- [ ] workflow 03 reports its usage to this logger
+- [x] workflow 03 reports its usage to this logger
 - [x] the report names the three most expensive workflows
 
-The middle box is deliberately unticked. Workflow 03 is already built and committed, and
-amending it means changing its `workflow.json`, its tests and its README. `SPEC.md` permits
-it; this folder has not done it. Until it is done, nothing is feeding the ledger
-automatically and the cap has nothing to count.
+The middle box was closed on 1 October 2026, in workflow 03's own folder. Workflow 03 now
+calls this one in `log` mode for every model call it makes, with the tokens of all attempts
+summed, and logs failed calls too because they were paid for. Callers that aggregate a
+whole batch into one row of their own send `log_spend: false` so nothing is counted twice;
+workflows 15 and 17 do that. A caller that sends no `workflow_name` still has its spend
+counted, under the name `[03] (caller not named)`, so the cap is correct even where the
+report cannot attribute the row.
 
 ## What is left to a human
 

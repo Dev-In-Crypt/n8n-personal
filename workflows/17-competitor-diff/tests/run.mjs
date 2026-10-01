@@ -316,6 +316,9 @@ const main = async () => {
     eq(requests[0].schema.properties.change_type.enum, ['pricing', 'feature', 'copy', 'noise'], 'change_type');
     eq(requests[0].schema.required, ['change_type', 'summary_ru', 'significance_0_10', 'quote'], 'required');
   });
+  check('workflow 03 is told not to log this call twice', () => {
+    eq(requests[0].log_spend, false, 'log_spend');
+  });
   check('the summary is asked for in the configured language', () => {
     ok(requests[0].system.includes('Russian'), 'language missing from the prompt');
   });

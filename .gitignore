@@ -12,6 +12,9 @@ n8n_data/
 .env
 *.key
 *.bak
+node_modules/
+package-lock.json
+package.json
 
 # Workflows are added one by one, once they are actually built and verified.
 workflows/*

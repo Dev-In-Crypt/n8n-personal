@@ -25,7 +25,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Normalises the call, applies defaults and builds the first Anthropic request.\n// Everything the retry loop needs travels in the item, so the HTTP node stays dumb.\nconst ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';\nconst DEFAULT_MODEL = 'claude-sonnet-4-5';\nconst DEFAULT_MAX_RETRIES = 2;\nconst MAX_TOKENS = 2000;\n\nconst input = $input.first().json || {};\n\nconst user = String(input.user || '').trim();\nif (!user) throw new Error('user prompt is required');\n\nconst schema = input.schema;\nif (!schema || typeof schema !== 'object') throw new Error('schema is required and must be an object');\n\nconst model = String(input.model || DEFAULT_MODEL);\nconst maxRetries = Number.isInteger(input.max_retries) ? input.max_retries : DEFAULT_MAX_RETRIES;\nif (maxRetries < 0 || maxRetries > 5) throw new Error('max_retries must be between 0 and 5');\n\n// The schema is part of the instruction, not a hope: the model is told the exact shape\n// and told to answer with JSON only.\nconst system = [\n  String(input.system || '').trim(),\n  'Answer with a single JSON object and nothing else. No prose, no code fences.',\n  'The object must match this JSON schema:',\n  JSON.stringify(schema),\n].filter(Boolean).join('\\n\\n');\n\nreturn [{\n  json: {\n    url: ANTHROPIC_URL,\n    model,\n    schema,\n    maxRetries,\n    attempt: 0,\n    waitSeconds: 2,\n    system,\n    messages: [{ role: 'user', content: user }],\n    body: {\n      model,\n      max_tokens: MAX_TOKENS,\n      system,\n      messages: [{ role: 'user', content: user }],\n    },\n  },\n}];\n"
+        "jsCode": "// Normalises the call, applies defaults and builds the first Anthropic request.\n// Everything the retry loop needs travels in the item, so the HTTP node stays dumb.\nconst ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';\nconst DEFAULT_MODEL = 'claude-sonnet-4-5';\nconst DEFAULT_MAX_RETRIES = 2;\nconst MAX_TOKENS = 2000;\n\nconst input = $input.first().json || {};\n\nconst user = String(input.user || '').trim();\nif (!user) throw new Error('user prompt is required');\n\nconst schema = input.schema;\nif (!schema || typeof schema !== 'object') throw new Error('schema is required and must be an object');\n\nconst model = String(input.model || DEFAULT_MODEL);\nconst maxRetries = Number.isInteger(input.max_retries) ? input.max_retries : DEFAULT_MAX_RETRIES;\nif (maxRetries < 0 || maxRetries > 5) throw new Error('max_retries must be between 0 and 5');\n\n// The schema is part of the instruction, not a hope: the model is told the exact shape\n// and told to answer with JSON only.\nconst system = [\n  String(input.system || '').trim(),\n  'Answer with a single JSON object and nothing else. No prose, no code fences.',\n  'The object must match this JSON schema:',\n  JSON.stringify(schema),\n].filter(Boolean).join('\\n\\n');\n\n// Spend reporting. Workflow 12a is the ledger every model call in this library is meant to\n// appear in; until now only the callers that remembered to log reached it, so the daily cap\n// was counting a fraction of the spend. The call is logged here instead, once, at the only\n// place that sees every caller. A caller that sums a whole batch itself opts out with\n// log_spend: false rather than being counted twice.\nconst logSpend = input.log_spend !== false;\nconst workflowName = String(input.workflow_name || input.caller || '').trim()\n  || '[03] (caller not named)';\nconst purpose = input.purpose === undefined || input.purpose === null\n  ? 'schema call'\n  : String(input.purpose).slice(0, 500);\n\nreturn [{\n  json: {\n    url: ANTHROPIC_URL,\n    model,\n    logSpend,\n    workflowName,\n    purpose,\n    schema,\n    maxRetries,\n    attempt: 0,\n    waitSeconds: 2,\n    system,\n    messages: [{ role: 'user', content: user }],\n    body: {\n      model,\n      max_tokens: MAX_TOKENS,\n      system,\n      messages: [{ role: 'user', content: user }],\n    },\n  },\n}];\n"
       }
     },
     {
@@ -73,7 +73,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Parses the reply, validates it against the schema and decides retry or stop.\n// This node is the loop controller: on failure it rebuilds the request with the\n// validation error appended, so the next pass is a repair attempt, not a repeat.\n\n// A deliberately small JSON Schema subset: type, required, properties, enum, items.\n// Enough for the shapes this library asks for, and honest about what it does not cover.\nfunction validate(value, schema, path) {\n  const errors = [];\n  const p = path || 'root';\n  const type = schema.type;\n\n  if (type) {\n    const actual = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;\n    const ok = type === 'integer'\n      ? Number.isInteger(value)\n      : type === 'number' ? typeof value === 'number' : actual === type;\n    if (!ok) {\n      errors.push(p + ': expected ' + type + ', got ' + actual);\n      return errors;\n    }\n  }\n  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {\n    errors.push(p + ': value ' + JSON.stringify(value) + ' is not one of ' + JSON.stringify(schema.enum));\n  }\n  if (type === 'object' || schema.properties) {\n    for (const key of schema.required || []) {\n      if (value === null || typeof value !== 'object' || !(key in value)) {\n        errors.push(p + ': missing required property \"' + key + '\"');\n      }\n    }\n    for (const [key, sub] of Object.entries(schema.properties || {})) {\n      if (value && typeof value === 'object' && key in value) {\n        errors.push(...validate(value[key], sub, p + '.' + key));\n      }\n    }\n  }\n  if (type === 'array' && schema.items && Array.isArray(value)) {\n    value.forEach((v, i) => errors.push(...validate(v, schema.items, p + '[' + i + ']')));\n  }\n  return errors;\n}\n\n// Models wrap JSON in prose or fences often enough that this has to be handled.\nfunction extractJson(text) {\n  const fenced = text.match(/```(?:json)?\\s*([\\s\\S]*?)```/);\n  const candidate = fenced ? fenced[1] : text;\n  try { return { value: JSON.parse(candidate.trim()) }; } catch (e) { /* fall through */ }\n  const start = candidate.search(/[{[]/);\n  if (start === -1) return { error: 'no JSON found in the reply' };\n  const end = Math.max(candidate.lastIndexOf('}'), candidate.lastIndexOf(']'));\n  if (end <= start) return { error: 'no JSON found in the reply' };\n  try { return { value: JSON.parse(candidate.slice(start, end + 1)) }; }\n  catch (e) { return { error: 'reply is not valid JSON: ' + e.message }; }\n}\n\nconst state = $('Prepare request').first().json;\nconst response = $input.first().json || {};\nconst attempt = (state.attempt || 0) + 1;\n\n// The HTTP node continues on error, so an API failure arrives here as data.\nconst apiError = response.error\n  ? (typeof response.error === 'string' ? response.error : JSON.stringify(response.error)).slice(0, 300)\n  : null;\n\nconst text = Array.isArray(response.content)\n  ? response.content.filter((c) => c.type === 'text').map((c) => c.text).join('')\n  : '';\n\nconst usage = response.usage\n  ? { input_tokens: response.usage.input_tokens, output_tokens: response.usage.output_tokens }\n  : null;\n\nlet data = null;\nlet errors = [];\nif (apiError) {\n  errors = ['api call failed: ' + apiError];\n} else if (!text) {\n  errors = ['empty reply from the model'];\n} else {\n  const parsed = extractJson(text);\n  if (parsed.error) errors = [parsed.error];\n  else {\n    data = parsed.value;\n    errors = validate(data, state.schema, 'root');\n  }\n}\n\nconst ok = errors.length === 0;\nconst attemptsLeft = state.maxRetries - (attempt - 1);\nconst done = ok || attemptsLeft <= 0;\n\n// Feed the failure back into the conversation so the retry is a repair.\nconst messages = ok ? state.messages : [\n  ...state.messages,\n  { role: 'assistant', content: text || '(no reply)' },\n  { role: 'user', content: 'That reply was rejected:\\n' + errors.map((e) => '- ' + e).join('\\n')\n      + '\\nAnswer again with a single JSON object matching the schema, nothing else.' },\n];\n\nreturn [{\n  json: {\n    ...state,\n    attempt,\n    done,\n    ok,\n    data: ok ? data : null,\n    errors,\n    usage,\n    raw: text,\n    waitSeconds: attempt === 1 ? 2 : 8,\n    messages,\n    body: { model: state.model, max_tokens: 2000, system: state.system, messages },\n  },\n}];\n"
+        "jsCode": "// Parses the reply, validates it against the schema and decides retry or stop.\n// This node is the loop controller: on failure it rebuilds the request with the\n// validation error appended, so the next pass is a repair attempt, not a repeat.\n\n// A deliberately small JSON Schema subset: type, required, properties, enum, items.\n// Enough for the shapes this library asks for, and honest about what it does not cover.\nfunction validate(value, schema, path) {\n  const errors = [];\n  const p = path || 'root';\n  const type = schema.type;\n\n  if (type) {\n    const actual = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;\n    const ok = type === 'integer'\n      ? Number.isInteger(value)\n      : type === 'number' ? typeof value === 'number' : actual === type;\n    if (!ok) {\n      errors.push(p + ': expected ' + type + ', got ' + actual);\n      return errors;\n    }\n  }\n  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {\n    errors.push(p + ': value ' + JSON.stringify(value) + ' is not one of ' + JSON.stringify(schema.enum));\n  }\n  if (type === 'object' || schema.properties) {\n    for (const key of schema.required || []) {\n      if (value === null || typeof value !== 'object' || !(key in value)) {\n        errors.push(p + ': missing required property \"' + key + '\"');\n      }\n    }\n    for (const [key, sub] of Object.entries(schema.properties || {})) {\n      if (value && typeof value === 'object' && key in value) {\n        errors.push(...validate(value[key], sub, p + '.' + key));\n      }\n    }\n  }\n  if (type === 'array' && schema.items && Array.isArray(value)) {\n    value.forEach((v, i) => errors.push(...validate(v, schema.items, p + '[' + i + ']')));\n  }\n  return errors;\n}\n\n// Models wrap JSON in prose or fences often enough that this has to be handled.\nfunction extractJson(text) {\n  const fenced = text.match(/```(?:json)?\\s*([\\s\\S]*?)```/);\n  const candidate = fenced ? fenced[1] : text;\n  try { return { value: JSON.parse(candidate.trim()) }; } catch (e) { /* fall through */ }\n  const start = candidate.search(/[{[]/);\n  if (start === -1) return { error: 'no JSON found in the reply' };\n  const end = Math.max(candidate.lastIndexOf('}'), candidate.lastIndexOf(']'));\n  if (end <= start) return { error: 'no JSON found in the reply' };\n  try { return { value: JSON.parse(candidate.slice(start, end + 1)) }; }\n  catch (e) { return { error: 'reply is not valid JSON: ' + e.message }; }\n}\n\nconst state = $('Prepare request').first().json;\nconst response = $input.first().json || {};\n// The attempt number is this node's own run number. It cannot be carried in the item:\n// \"Prepare request\" runs once, so on a retry it hands back attempt 0 again, `done` would\n// never turn true, and the loop would keep calling the model until something else stopped\n// it. $runIndex is the one counter that actually advances with the loop.\nconst attempt = $runIndex + 1;\n\n// The HTTP node continues on error, so an API failure arrives here as data.\nconst apiError = response.error\n  ? (typeof response.error === 'string' ? response.error : JSON.stringify(response.error)).slice(0, 300)\n  : null;\n\nconst text = Array.isArray(response.content)\n  ? response.content.filter((c) => c.type === 'text').map((c) => c.text).join('')\n  : '';\n\n// Every attempt was paid for, so the usage reported out of here is the sum over all of\n// them. The earlier runs of the HTTP node are the only place that history still exists.\nlet totalIn = 0;\nlet totalOut = 0;\nlet counted = 0;\nfor (let run = 0; run <= $runIndex; run++) {\n  let u = null;\n  try { u = (($('Call Anthropic').all(0, run)[0] || {}).json || {}).usage; } catch (e) { u = null; }\n  if (u) {\n    totalIn += Number(u.input_tokens) || 0;\n    totalOut += Number(u.output_tokens) || 0;\n    counted += 1;\n  }\n}\nconst usage = counted ? { input_tokens: totalIn, output_tokens: totalOut } : null;\n\nlet data = null;\nlet errors = [];\nif (apiError) {\n  errors = ['api call failed: ' + apiError];\n} else if (!text) {\n  errors = ['empty reply from the model'];\n} else {\n  const parsed = extractJson(text);\n  if (parsed.error) errors = [parsed.error];\n  else {\n    data = parsed.value;\n    errors = validate(data, state.schema, 'root');\n  }\n}\n\nconst ok = errors.length === 0;\nconst attemptsLeft = state.maxRetries - (attempt - 1);\nconst done = ok || attemptsLeft <= 0;\n\n// Feed the failure back into the conversation so the retry is a repair.\nconst messages = ok ? state.messages : [\n  ...state.messages,\n  { role: 'assistant', content: text || '(no reply)' },\n  { role: 'user', content: 'That reply was rejected:\\n' + errors.map((e) => '- ' + e).join('\\n')\n      + '\\nAnswer again with a single JSON object matching the schema, nothing else.' },\n];\n\nreturn [{\n  json: {\n    ...state,\n    attempt,\n    done,\n    ok,\n    data: ok ? data : null,\n    errors,\n    usage,\n    raw: text,\n    waitSeconds: attempt === 1 ? 2 : 8,\n    messages,\n    body: { model: state.model, max_tokens: 2000, system: state.system, messages },\n  },\n}];\n"
       }
     },
     {
@@ -116,12 +116,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1180,
-        -110
+        2000,
+        -160
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Single exit point, same shape whether the call succeeded or ran out of attempts.\nconst s = $input.first().json;\nreturn [{\n  json: {\n    ok: s.ok,\n    data: s.data,\n    attempts: s.attempt,\n    errors: s.errors,\n    usage: s.usage,\n    model: s.model,\n    raw_on_failure: s.ok ? null : String(s.raw || '').slice(0, 2000),\n  },\n}];\n"
+        "jsCode": "// Single exit point, same shape whether the call succeeded or ran out of attempts.\n// The state is read from the validator by name, not from the input: the spend log sits\n// between the two now, and its answer must never become this workflow's answer.\nconst s = $('Validate against schema').first().json;\nreturn [{\n  json: {\n    ok: s.ok,\n    data: s.data,\n    attempts: s.attempt,\n    errors: s.errors,\n    usage: s.usage,\n    model: s.model,\n    raw_on_failure: s.ok ? null : String(s.raw || '').slice(0, 2000),\n  },\n}];\n"
       }
     },
     {
@@ -184,6 +184,82 @@
         "amount": 8,
         "unit": "seconds"
       }
+    },
+    {
+      "id": "e3000000-0000-4000-8000-000000000010",
+      "name": "Report the spend?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1400,
+        -160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e3000000-0000-4000-8000-000000000020",
+              "leftValue": "={{ $json.logSpend && !!$json.usage }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e3000000-0000-4000-8000-000000000011",
+      "name": "Build the spend log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        -260
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The ledger row for this call: the tokens of every attempt, under the caller's name.\nconst s = $('Validate against schema').first().json;\nconst u = s.usage || {};\nreturn [{\n  json: {\n    mode: 'log',\n    workflow_name: s.workflowName,\n    model: s.model,\n    // Whole numbers only: workflow 12a rejects anything else, and a rejected log would\n    // take down a model call that already succeeded.\n    usage: {\n      input_tokens: Math.max(0, Math.round(Number(u.input_tokens) || 0)),\n      output_tokens: Math.max(0, Math.round(Number(u.output_tokens) || 0)),\n    },\n    purpose: s.ok\n      ? s.purpose\n      : s.purpose + ' (no valid answer after ' + s.attempt + ' attempts)',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "e3000000-0000-4000-8000-000000000012",
+      "name": "Log the spend",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1800,
+        -260
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "7x0VlU6BXxpHP5tK",
+          "mode": "list",
+          "cachedResultName": "[12a] LLM cost guard"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
     }
   ],
   "connections": {
@@ -235,7 +311,7 @@
       "main": [
         [
           {
-            "node": "Return result",
+            "node": "Report the spend?",
             "type": "main",
             "index": 0
           }
@@ -283,6 +359,46 @@
         [
           {
             "node": "Call Anthropic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report the spend?": {
+      "main": [
+        [
+          {
+            "node": "Build the spend log",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build the spend log": {
+      "main": [
+        [
+          {
+            "node": "Log the spend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log the spend": {
+      "main": [
+        [
+          {
+            "node": "Return result",
             "type": "main",
             "index": 0
           }

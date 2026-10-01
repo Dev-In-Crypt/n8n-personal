@@ -69,6 +69,13 @@ urgent mail from one run is one Telegram message, capped at ten lines.
 **Empty answers never stop the run.** An empty lookup and an empty insert both still emit
 an item, the same trap found in workflows 11 and 02.
 
+**The spend is logged once, by this workflow, not by workflow 03.** Since 1 October 2026
+workflow 03 logs every model call it makes to the ledger on its own. This workflow already
+sums the whole batch into one row with a purpose line, which is better reading and one
+sub-workflow execution instead of one per call, so its request to 03 carries
+`log_spend: false`. Without that flag the same tokens would be counted twice and the daily
+cap would trip at half the real budget.
+
 ## Verification
 
 `validate_workflow` with the `strict` profile **against the live instance** (n8n-mcp

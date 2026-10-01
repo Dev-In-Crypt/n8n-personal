@@ -72,6 +72,13 @@ to turn one run into a stalled execution.
 **The sheet is written as RAW.** A removed line that starts with `=` or `+` would be
 interpreted as a formula by Google Sheets and land in the sheet as an error.
 
+**The spend is logged once, by this workflow, not by workflow 03.** Since 1 October 2026
+workflow 03 logs every model call it makes to the ledger on its own. This workflow already
+sums the whole batch into one row with a purpose line, which is better reading and one
+sub-workflow execution instead of one per call, so its request to 03 carries
+`log_spend: false`. Without that flag the same tokens would be counted twice and the daily
+cap would trip at half the real budget.
+
 ## Verification
 
 Deployed to the live instance as `nGZJN72kgQmNlztF` and validated with n8n-mcp's **strict**
